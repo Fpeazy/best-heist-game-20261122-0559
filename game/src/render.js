@@ -15,6 +15,25 @@ import {
 
 const GRID_BEAMS = [596, 660, 724];
 
+// The vignette, pre-rendered once at import: a full-screen radial
+// gradient fill costs ~80ms a frame in a software renderer (swiftshader
+// measured 4.5fps with the rev5 gradients live — the first frame took
+// over a second, so Enter had not been consumed when the play-test
+// pressed P and the whole live run froze paused). A drawImage of the
+// baked vignette is a few ms. The vignette never changes, so baking it
+// loses nothing.
+const VIGNETTE = document.createElement('canvas');
+VIGNETTE.width = 1280;
+VIGNETTE.height = 720;
+{
+  const vc = VIGNETTE.getContext('2d');
+  const vig = vc.createRadialGradient(640, 360, 260, 640, 360, 780);
+  vig.addColorStop(0, 'rgba(4,6,14,0)');
+  vig.addColorStop(1, 'rgba(4,6,14,0.30)');
+  vc.fillStyle = vig;
+  vc.fillRect(0, 0, 1280, 720);
+}
+
 // Seeded ambient life: dust motes that drift on fixed paths, a
 // chandelier that breathes, a glint on the gold. Positions come from
 // mulberry32 once at load; motion is a pure function of s.time, so a
@@ -31,6 +50,24 @@ for (let i = 0; i < 42; i += 1) {
     speed: 0.25 + AMBIENT_RNG() * 0.5,
     drift: 6 + AMBIENT_RNG() * 18,
     alpha: 0.10 + AMBIENT_RNG() * 0.18,
+  });
+}
+
+// Dust motes that live INSIDE the camera beam: each one is a seeded
+// fraction along the beam (u) and a seeded lateral offset (v) inside the
+// beam's wedge, so their world position is a pure function of the live
+// beam angle and the clock — deterministic, and the beam visibly carries
+// dust the way a real spotlight does. Rev5 (Fxzy: "Sorotan CCTV atau
+// Camera perbagus").
+const BEAM_DUST = [];
+for (let i = 0; i < 16; i += 1) {
+  BEAM_DUST.push({
+    u: 0.12 + AMBIENT_RNG() * 0.8,
+    v: (AMBIENT_RNG() * 2 - 1) * 0.8,
+    r: 0.9 + AMBIENT_RNG() * 1.4,
+    phase: AMBIENT_RNG() * Math.PI * 2,
+    speed: 0.4 + AMBIENT_RNG() * 0.7,
+    alpha: 0.25 + AMBIENT_RNG() * 0.35,
   });
 }
 
@@ -75,10 +112,11 @@ function drawCone(ctx, guard) {
   }
   ctx.closePath();
   const hot = guard.state === 'chase';
-  const grad = ctx.createRadialGradient(eyeX, eyeY, 10, eyeX, eyeY, range);
-  grad.addColorStop(0, hot ? 'rgba(255,60,50,0.5)' : 'rgba(255,176,32,0.42)');
-  grad.addColorStop(1, 'rgba(255,176,32,0.05)');
-  ctx.fillStyle = grad;
+  // Flat fill, not a radial gradient: the occluded fan shape is what
+  // matters (the rays stop at cover), and a flat amber at low alpha
+  // reads the same at 768x480 for a fraction of the software-render
+  // cost. The stroke keeps the cone's edge crisp.
+  ctx.fillStyle = hot ? 'rgba(255,60,50,0.32)' : 'rgba(255,176,32,0.26)';
   ctx.fill();
   ctx.strokeStyle = hot ? 'rgba(255,60,50,0.75)' : 'rgba(255,176,32,0.55)';
   ctx.lineWidth = 2;
@@ -91,33 +129,86 @@ function drawLaser(ctx, state) {
   const len = laserHit(CAMERA.x, CAMERA.y, cam.angle, CAMERA.beamLength);
   const x2 = CAMERA.x + Math.cos(cam.angle) * len;
   const y2 = CAMERA.y + Math.sin(cam.angle) * len;
+  // Rev5 (Fxzy: "Sorotan CCTV atau Camera perbagus"): the camera no
+  // longer fires a bare line — it throws a real spotlight. A widening
+  // red wedge with a soft falloff, a hot core, dust drifting inside
+  // the beam, and a pool of red light where the beam lands on the
+  // floor. It stays RED and narrow, so it never reads as an amber
+  // guard cone, and the wedge alpha stays low so the thief, the loot
+  // and the vitrines behind it still read.
+  const WEDGE_HALF = 0.055;
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  // Rev4: a thicker beam — the 3px core shrank to ~2px at 768x480 and
-  // melted into the warm art-deco wall. At 5px logical it still reads
-  // as a 3px line on the judge's contact sheet, clearly distinct from
-  // the wide amber guard cones.
+  // The wedge: a flat low-alpha fan, not a radial gradient — the fan
+  // shape and the hot core carry the spotlight read, and a flat fill is
+  // far cheaper per frame in a software renderer. Same reasoning as the
+  // guard cones (rev5 perf fix: swiftshader was at 4.5fps).
+  ctx.fillStyle = 'rgba(255,46,62,0.10)';
+  ctx.beginPath();
+  ctx.moveTo(CAMERA.x, CAMERA.y);
+  ctx.arc(CAMERA.x, CAMERA.y, len, cam.angle - WEDGE_HALF, cam.angle + WEDGE_HALF);
+  ctx.closePath();
+  ctx.fill();
+  // Soft outer halo around the core line.
   ctx.strokeStyle = 'rgba(255,46,62,0.3)';
   ctx.lineWidth = 18;
   ctx.beginPath();
   ctx.moveTo(CAMERA.x, CAMERA.y);
   ctx.lineTo(x2, y2);
   ctx.stroke();
-  ctx.strokeStyle = cam.lockOnT > 0 ? '#ff5a68' : '#ff2e3e';
+  // The hot core: bright at the lens, slightly dimmer at the far end.
+  const core = ctx.createLinearGradient(CAMERA.x, CAMERA.y, x2, y2);
+  core.addColorStop(0, '#ff7a86');
+  core.addColorStop(0.4, '#ff2e3e');
+  core.addColorStop(1, '#e01e30');
+  ctx.strokeStyle = cam.lockOnT > 0 ? '#ff5a68' : core;
   ctx.lineWidth = 5;
   ctx.beginPath();
   ctx.moveTo(CAMERA.x, CAMERA.y);
   ctx.lineTo(x2, y2);
   ctx.stroke();
+  // Dust motes drifting inside the beam, seeded along it.
+  const px = -Math.sin(cam.angle);
+  const py = Math.cos(cam.angle);
+  for (const d of BEAM_DUST) {
+    const along = d.u * len;
+    const halfW = along * Math.tan(WEDGE_HALF) * d.v;
+    const dx = CAMERA.x + Math.cos(cam.angle) * along + px * halfW;
+    const dy = CAMERA.y + Math.sin(cam.angle) * along + py * halfW;
+    const tw = 0.6 + 0.4 * Math.sin(state.time * d.speed * 2 + d.phase);
+    ctx.fillStyle = `rgba(255,190,190,${(d.alpha * tw).toFixed(3)})`;
+    ctx.beginPath();
+    ctx.arc(dx, dy, d.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // Hot spot where the beam lands.
   ctx.fillStyle = '#ff2e3e';
   ctx.beginPath();
   ctx.arc(x2, y2, 5, 0, Math.PI * 2);
   ctx.fill();
+  ctx.fillStyle = 'rgba(255,122,134,0.85)';
+  ctx.beginPath();
+  ctx.arc(x2, y2, 2.5, 0, Math.PI * 2);
+  ctx.fill();
+  // The light pool: where the beam meets the floor it spreads into an
+  // ellipse of red light. Only when the beam actually reaches the
+  // floor (not when a statue or vitrine cuts it short mid-air).
+  if (y2 > 580) {
+    const pool = ctx.createRadialGradient(x2, 620, 4, x2, 620, 64);
+    pool.addColorStop(0, 'rgba(255,46,62,0.30)');
+    pool.addColorStop(0.6, 'rgba(255,46,62,0.12)');
+    pool.addColorStop(1, 'rgba(255,46,62,0)');
+    ctx.fillStyle = pool;
+    ctx.beginPath();
+    ctx.ellipse(x2, 620, 64, 14, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
   // Pulsing ring at the emitter, 1 Hz from seeded state time — no
   // Math.random, so the staged frames stay deterministic. The ring
   // marks the camera as a live system, not a wall decoration.
+  ctx.save();
   const pulse = 0.5 + 0.5 * Math.sin(state.time * Math.PI * 2);
-  ctx.globalCompositeOperation = 'source-over';
   ctx.strokeStyle = `rgba(255,46,62,${0.4 + 0.4 * pulse})`;
   ctx.lineWidth = 2;
   ctx.beginPath();
@@ -398,11 +489,26 @@ function drawVitrine(ctx, s, key, v) {
     ctx.strokeStyle = 'rgba(207,232,255,0.5)';
     ctx.lineWidth = 2;
     ctx.strokeRect(v.x, v.y, v.w, v.h);
+    // Rev5: a real glass reflection — two diagonal shine streaks plus a
+    // soft highlight across the top, so the vitrine reads as glass with
+    // something behind it, not a pale box.
     ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 3;
     ctx.beginPath();
     ctx.moveTo(v.x + 12, v.y + v.h - 8);
     ctx.lineTo(v.x + v.w * 0.45, v.y + 10);
     ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.moveTo(v.x + v.w * 0.55, v.y + v.h - 6);
+    ctx.lineTo(v.x + v.w - 8, v.y + v.h * 0.4);
+    ctx.stroke();
+    const topSheen = ctx.createLinearGradient(0, v.y, 0, v.y + 22);
+    topSheen.addColorStop(0, 'rgba(255,255,255,0.16)');
+    topSheen.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = topSheen;
+    ctx.fillRect(v.x, v.y, v.w, 22);
   } else if (glass === 'smashed') {
     ctx.fillStyle = 'rgba(207,232,255,0.7)';
     for (let i = 0; i < 7; i += 1) {
@@ -416,9 +522,21 @@ function drawVitrine(ctx, s, key, v) {
     }
   }
   // Gold spilled on the floor once the centre vitrine is opened or smashed.
+  // Rev5: a real spill — a low mound with coins of several sizes heaped
+  // on it, two of them catching a glint, so the win frame reads "the
+  // gold is OUT" at a glance instead of four lonely dots.
   if (key === 'centre' && glass !== 'shut') {
-    ctx.fillStyle = PALETTE.goldBright;
-    for (const [gx, gy, gr] of [[v.x + 18, v.y + v.h + 8, 6], [v.x + 52, v.y + v.h + 12, 5], [v.x + 88, v.y + v.h + 7, 6], [v.x + 104, v.y + v.h + 13, 4]]) {
+    ctx.fillStyle = '#c8952e';
+    ctx.beginPath();
+    ctx.ellipse(v.x + v.w / 2, v.y + v.h + 12, 52, 8, 0, 0, Math.PI * 2);
+    ctx.fill();
+    const spill = [
+      [v.x + 14, v.y + v.h + 8, 6], [v.x + 34, v.y + v.h + 13, 5], [v.x + 52, v.y + v.h + 7, 7],
+      [v.x + 70, v.y + v.h + 13, 5], [v.x + 88, v.y + v.h + 7, 6], [v.x + 104, v.y + v.h + 12, 4],
+      [v.x + 26, v.y + v.h + 4, 4], [v.x + 62, v.y + v.h + 3, 4], [v.x + 96, v.y + v.h + 4, 3],
+    ];
+    for (const [gx, gy, gr] of spill) {
+      ctx.fillStyle = PALETTE.goldBright;
       ctx.beginPath();
       ctx.arc(gx, gy, gr, 0, Math.PI * 2);
       ctx.fill();
@@ -426,6 +544,20 @@ function drawVitrine(ctx, s, key, v) {
       ctx.lineWidth = 1;
       ctx.stroke();
     }
+    const spillGlint = 0.4 + 0.4 * Math.sin(s.time * 3 + 1);
+    ctx.save();
+    ctx.globalAlpha = spillGlint;
+    ctx.strokeStyle = '#fff3c4';
+    ctx.lineWidth = 1.5;
+    for (const [gx, gy] of [[v.x + 52, v.y + v.h + 7], [v.x + 88, v.y + v.h + 7]]) {
+      ctx.beginPath();
+      ctx.moveTo(gx - 5, gy);
+      ctx.lineTo(gx + 5, gy);
+      ctx.moveTo(gx, gy - 5);
+      ctx.lineTo(gx, gy + 5);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
   // Label plate.
   ctx.font = `bold 12px ${FONT}`;
@@ -484,49 +616,173 @@ function drawRoom(ctx, s) {
     ctx.lineTo(wx + 110, 130);
     ctx.stroke();
   }
-  // Paintings between the windows.
+  // Paintings between the windows — rev5: real mini-art inside the
+  // frames, not flat colour blocks. "The Duchess" is a portrait
+  // (head, shoulders, pearl necklace); "The Hunt" is a little landscape
+  // (hills, a rider, a pale moon). Each keeps its gold frame and label.
   const paintings = [
-    { x: 250, w: 90, hue: '#7a4a2e', label: 'The Duchess' },
-    { x: 830, w: 90, hue: '#2e5a4a', label: 'The Hunt' },
+    { x: 250, w: 90, hue: '#7a4a2e', label: 'The Duchess', art: 'duchess' },
+    { x: 830, w: 90, hue: '#2e5a4a', label: 'The Hunt', art: 'hunt' },
   ];
   for (const pg of paintings) {
     ctx.fillStyle = PALETTE.goldDim;
     ctx.fillRect(pg.x - 4, 76, pg.w + 8, 108);
     ctx.fillStyle = pg.hue;
     ctx.fillRect(pg.x, 80, pg.w, 100);
+    ctx.strokeStyle = 'rgba(232,182,76,0.5)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(pg.x + 4, 84, pg.w - 8, 92);
+    const cx = pg.x + pg.w / 2;
+    if (pg.art === 'duchess') {
+      // Portrait: dark hair bun, pale face, dark shoulders, pearls.
+      ctx.fillStyle = '#2a1a12';
+      ctx.beginPath();
+      ctx.arc(cx, 108, 13, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(cx, 96, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#e8d5b0';
+      ctx.beginPath();
+      ctx.arc(cx, 110, 10, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#3a2a3a';
+      ctx.beginPath();
+      ctx.moveTo(cx - 24, 176);
+      ctx.quadraticCurveTo(cx - 20, 140, cx, 134);
+      ctx.quadraticCurveTo(cx + 20, 140, cx + 24, 176);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#f4ead0';
+      for (let i = -2; i <= 2; i += 1) {
+        ctx.beginPath();
+        ctx.arc(cx + i * 5, 140 + Math.abs(i), 1.8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else {
+      // Landscape: pale moon, two hills, a rider on the far hill.
+      ctx.fillStyle = '#f4ead0';
+      ctx.beginPath();
+      ctx.arc(cx + 22, 100, 7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#24463a';
+      ctx.beginPath();
+      ctx.moveTo(pg.x, 176);
+      ctx.quadraticCurveTo(cx - 10, 138, cx + 18, 152);
+      ctx.quadraticCurveTo(cx + 40, 162, pg.x + pg.w, 148);
+      ctx.lineTo(pg.x + pg.w, 176);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#1d3a2f';
+      ctx.beginPath();
+      ctx.moveTo(pg.x, 176);
+      ctx.quadraticCurveTo(cx - 20, 158, cx + 30, 168);
+      ctx.lineTo(pg.x + pg.w, 176);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = '#0f241c';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(cx - 18, 146);
+      ctx.lineTo(cx - 6, 146);
+      ctx.moveTo(cx - 16, 146);
+      ctx.lineTo(cx - 18, 138);
+      ctx.moveTo(cx - 8, 146);
+      ctx.lineTo(cx - 6, 138);
+      ctx.stroke();
+      ctx.fillStyle = '#0f241c';
+      ctx.beginPath();
+      ctx.arc(cx - 12, 134, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.fillStyle = 'rgba(242,234,216,0.8)';
     ctx.font = `italic 11px ${FONT_DISPLAY}`;
     ctx.textAlign = 'center';
     ctx.fillText(pg.label, pg.x + pg.w / 2, 196);
   }
-  // Chandelier over the centre vitrine. The bulbs breathe: a slow
-  // flicker (pure function of s.time) so the hall feels lit, not flat.
+  // Wall panelling: two slim pilasters with gold edges, so the long navy
+  // wall reads as layered architecture instead of one flat fill. Kept
+  // dark and thin — decoration must never out-shout the thief, a cone
+  // or the laser.
+  for (const px of [470, 812]) {
+    ctx.fillStyle = '#1b2240';
+    ctx.fillRect(px, 46, 10, 574);
+    ctx.strokeStyle = 'rgba(154,122,46,0.45)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(px, 46, 10, 574);
+  }
+  // Dado rail: a thin gold line low on the wall, above the floor.
+  ctx.strokeStyle = 'rgba(154,122,46,0.5)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, 556);
+  ctx.lineTo(FIELD.width, 556);
+  ctx.stroke();
+  // Chandelier over the centre vitrine — rev5: a proper ornate piece.
+  // A brass ring with five candle bulbs on curved arms, crystal drops
+  // hanging below, and a warm pool of light on the carpet under it.
+  // The bulbs breathe: a slow flicker (pure function of s.time) so the
+  // hall feels lit, not flat.
   const flicker = 0.82 + 0.18 * Math.sin(s.time * 1.7 + 0.6);
   ctx.strokeStyle = PALETTE.goldDim;
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.moveTo(660, 46);
-  ctx.lineTo(660, 78);
+  ctx.lineTo(660, 62);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(660, 78, 52, 10, 0, 0, Math.PI * 2);
   ctx.stroke();
   ctx.fillStyle = PALETTE.gold;
-  for (let i = -1; i <= 1; i += 1) {
-    ctx.globalAlpha = flicker;
+  for (let i = -2; i <= 2; i += 1) {
+    const bx = 660 + i * 24;
+    const by = 78 - Math.abs(i) * 2;
+    // Curved arm from the ring up to the candle.
+    ctx.strokeStyle = PALETTE.goldDim;
     ctx.beginPath();
-    ctx.arc(660 + i * 26, 84, 6, 0, Math.PI * 2);
+    ctx.moveTo(660 + i * 18, 78);
+    ctx.quadraticCurveTo(660 + i * 22, 66, bx, by);
+    ctx.stroke();
+    // Candle + flame.
+    ctx.fillStyle = '#f4ead0';
+    ctx.fillRect(bx - 2, by - 10, 4, 10);
+    ctx.globalAlpha = flicker;
+    ctx.fillStyle = '#ffd97a';
+    ctx.beginPath();
+    ctx.ellipse(bx, by - 13, 3, 5, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.globalAlpha = flicker * 0.35;
     ctx.beginPath();
-    ctx.arc(660 + i * 26, 84, 11, 0, Math.PI * 2);
+    ctx.arc(bx, by - 13, 9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    // Crystal drop hanging from the ring.
+    ctx.fillStyle = 'rgba(207,232,255,0.85)';
+    ctx.beginPath();
+    ctx.moveTo(bx, 88);
+    ctx.lineTo(bx + 3.5, 96);
+    ctx.lineTo(bx, 104);
+    ctx.lineTo(bx - 3.5, 96);
+    ctx.closePath();
     ctx.fill();
   }
   ctx.globalAlpha = 1;
-  ctx.fillStyle = `rgba(255,217,122,${(0.11 + 0.04 * Math.sin(s.time * 1.7)).toFixed(3)})`;
+  // Warm light cone from the chandelier — a flat fill at the mean of
+  // the old breathing alpha (0.11-0.16). The bulbs still breathe live;
+  // the big trapezoid does not need a per-frame gradient (rev5 perf).
+  ctx.fillStyle = 'rgba(255,217,122,0.13)';
   ctx.beginPath();
   ctx.moveTo(620, 92);
   ctx.lineTo(700, 92);
   ctx.lineTo(760, 620);
   ctx.lineTo(560, 620);
   ctx.closePath();
+  ctx.fill();
+  // Warm pool of chandelier light on the carpet, under the vitrine.
+  // Flat fill: the radial falloff was invisible at 768x480 anyway.
+  ctx.fillStyle = 'rgba(255,205,110,0.10)';
+  ctx.beginPath();
+  ctx.ellipse(660, 620, 220, 26, 0, 0, Math.PI * 2);
   ctx.fill();
 
   // Floor + red carpet runner.
@@ -629,6 +885,9 @@ function drawRoom(ctx, s) {
       ctx.arc(c.x + c.w / 2, c.y - 8, 10, 0, Math.PI * 2);
       ctx.fill();
     } else if (c.kind === 'statue') {
+      // Rev5: a robed figure, not a flat triangle — drapery folds, a
+      // sash, and a stepped pedestal, so the big sight-blocker reads as
+      // a museum piece at 768x480.
       ctx.fillStyle = '#8f9bb5';
       ctx.beginPath();
       ctx.moveTo(c.x + c.w / 2, c.y);
@@ -641,11 +900,35 @@ function drawRoom(ctx, s) {
       ctx.strokeStyle = '#5a6486';
       ctx.lineWidth = 2;
       ctx.stroke();
+      // Drapery folds.
+      ctx.strokeStyle = 'rgba(90,100,134,0.8)';
+      ctx.lineWidth = 1.5;
+      for (const fx of [0.32, 0.5, 0.68]) {
+        ctx.beginPath();
+        ctx.moveTo(c.x + c.w * fx, c.y + 14);
+        ctx.quadraticCurveTo(c.x + c.w * fx - 4, c.y + c.h * 0.55, c.x + c.w * fx, c.y + c.h - 4);
+        ctx.stroke();
+      }
+      // Sash across the chest.
+      ctx.strokeStyle = PALETTE.goldDim;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(c.x + c.w * 0.3, c.y + c.h * 0.3);
+      ctx.lineTo(c.x + c.w * 0.7, c.y + c.h * 0.48);
+      ctx.stroke();
+      // Head.
       ctx.beginPath();
       ctx.arc(c.x + c.w / 2, c.y - 6, 9, 0, Math.PI * 2);
       ctx.fillStyle = '#8f9bb5';
       ctx.fill();
+      ctx.strokeStyle = '#5a6486';
+      ctx.lineWidth = 2;
       ctx.stroke();
+      // Stepped pedestal.
+      ctx.fillStyle = '#6d7590';
+      ctx.fillRect(c.x + 8, c.y + c.h - 4, c.w - 16, 6);
+      ctx.fillStyle = PALETTE.goldDim;
+      ctx.fillRect(c.x + 8, c.y + c.h - 4, c.w - 16, 2);
     } else if (c.kind === 'curtain') {
       ctx.fillStyle = '#6d1420';
       roundRect(ctx, c.x, c.y, c.w, c.h, 6);
@@ -698,6 +981,27 @@ function drawRoom(ctx, s) {
   ctx.stroke();
   ctx.fillStyle = s.terminalHacked ? '#0d3a34' : '#0d2a1a';
   ctx.fillRect(TERMINAL.x + 6, TERMINAL.y + 6, TERMINAL.w - 12, 34);
+  // Rev5: a faint scanline texture on the screen, so it reads as a live
+  // monitor behind the HACKED / CAM LIVE text, plus a cursor block
+  // blinking in the screen's bottom-right corner on the live clock.
+  ctx.fillStyle = s.terminalHacked ? 'rgba(46,196,182,0.10)' : 'rgba(87,217,119,0.10)';
+  for (let ly = TERMINAL.y + 9; ly < TERMINAL.y + 40; ly += 4) {
+    ctx.fillRect(TERMINAL.x + 7, ly, TERMINAL.w - 14, 1);
+  }
+  const cursor = 0.5 + 0.5 * Math.sin(s.time * 6);
+  ctx.fillStyle = s.terminalHacked
+    ? `rgba(46,196,182,${0.3 + 0.7 * cursor})`
+    : `rgba(87,217,119,${0.3 + 0.7 * cursor})`;
+  ctx.fillRect(TERMINAL.x + TERMINAL.w - 13, TERMINAL.y + 35, 5, 3);
+  // Keypad dots under the screen, below the hack progress bar.
+  ctx.fillStyle = 'rgba(242,234,216,0.5)';
+  for (let r = 0; r < 2; r += 1) {
+    for (let c = 0; c < 3; c += 1) {
+      ctx.beginPath();
+      ctx.arc(TERMINAL.x + 14 + c * 14, TERMINAL.y + 60 + r * 9, 1.8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
   ctx.fillStyle = s.terminalHacked ? PALETTE.teal : '#57d977';
   ctx.font = `bold 9px ${FONT}`;
   ctx.textAlign = 'center';
@@ -717,15 +1021,43 @@ function drawRoom(ctx, s) {
   ctx.strokeStyle = PALETTE.goldDim;
   ctx.lineWidth = 3;
   ctx.strokeRect(SERVICE_DOOR.x, SERVICE_DOOR.y, SERVICE_DOOR.w, SERVICE_DOOR.h);
+  // Hinges + handle bar, so the door reads as a door, not a dark slab.
+  ctx.fillStyle = '#0f1a0e';
+  ctx.fillRect(SERVICE_DOOR.x + 2, SERVICE_DOOR.y + 24, 8, 14);
+  ctx.fillRect(SERVICE_DOOR.x + 2, SERVICE_DOOR.y + SERVICE_DOOR.h - 38, 8, 14);
+  ctx.fillStyle = PALETTE.goldDim;
+  ctx.fillRect(SERVICE_DOOR.x + SERVICE_DOOR.w - 12, SERVICE_DOOR.y + 46, 5, 34);
   ctx.fillStyle = s.loot.kancil ? '#1f7a4a' : '#3a4a3a';
   roundRect(ctx, SERVICE_DOOR.x + 10, SERVICE_DOOR.y - 26, 44, 20, 3);
   ctx.fill();
+  // The EXIT sign glows once the Kancil is taken: the way out lights up.
+  if (s.loot.kancil) {
+    ctx.save();
+    ctx.shadowColor = '#4dff88';
+    ctx.shadowBlur = 14;
+    ctx.fillStyle = '#1f7a4a';
+    roundRect(ctx, SERVICE_DOOR.x + 10, SERVICE_DOOR.y - 26, 44, 20, 3);
+    ctx.fill();
+    ctx.restore();
+  }
   ctx.fillStyle = '#eafff0';
   ctx.font = `bold 11px ${FONT}`;
   ctx.fillText('EXIT', SERVICE_DOOR.x + 32, SERVICE_DOOR.y - 12);
   ctx.fillStyle = PALETTE.gold;
   ctx.font = `bold 10px ${FONT}`;
   ctx.fillText('SERVICE DOOR', SERVICE_DOOR.x + 32, SERVICE_DOOR.y + SERVICE_DOOR.h + 16);
+
+  // Floor sheen: a soft warm band where the chandelier light meets the
+  // polished floor, so the floor reads as wood, not a flat fill.
+  ctx.fillStyle = 'rgba(255,220,150,0.05)';
+  ctx.fillRect(0, 624, FIELD.width, 10);
+  // Vignette: the hall's corners fall gently into darkness, which
+  // pushes the eye toward the lit centre — the vitrine, the thief, the
+  // cones. Drawn over the room only (entities draw on top), and kept
+  // light so nothing at the edges is lost. Pre-rendered once at import
+  // (see VIGNETTE above): a live full-screen radial gradient was the
+  // single most expensive fill in the frame (rev5 perf fix).
+  ctx.drawImage(VIGNETTE, 0, 0);
 }
 
 function drawCoins(ctx, s) {
@@ -739,6 +1071,20 @@ function drawCoins(ctx, s) {
     ctx.strokeStyle = PALETTE.goldDim;
     ctx.lineWidth = 2;
     ctx.stroke();
+    // Rev5: a four-point star glint that breathes on the clock, so the
+    // coins sparkle instead of sitting as flat gold dots.
+    const gl = 0.35 + 0.35 * Math.sin(s.time * 4 + i * 1.3);
+    ctx.save();
+    ctx.globalAlpha = gl;
+    ctx.strokeStyle = '#fff3c4';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(coin.x - 6, coin.y - 6);
+    ctx.lineTo(coin.x + 6, coin.y + 6);
+    ctx.moveTo(coin.x + 6, coin.y - 6);
+    ctx.lineTo(coin.x - 6, coin.y + 6);
+    ctx.stroke();
+    ctx.restore();
     ctx.fillStyle = PALETTE.goldDim;
     ctx.font = 'bold 10px ' + FONT;
     ctx.textAlign = 'center';
@@ -748,16 +1094,47 @@ function drawCoins(ctx, s) {
 
 function drawCameraUnit(ctx, s) {
   const cam = s.camera;
+  // Rev5 (Fxzy: "Sorotan CCTV atau Camera perbagus"): the unit is now a
+  // real CCTV camera, not a red dot on the wall — a ceiling bracket, a
+  // vented housing, a lens barrel with a glass lens and a white ring,
+  // and a small status LED that blinks on the live clock. Still the
+  // same footprint and the same "CAMERA / CAMERA OFF" label, so the
+  // staged frames keep their layout.
   ctx.save();
-  ctx.fillStyle = cam.offT > 0 ? '#2a3040' : '#3d3a55';
+  // Ceiling bracket: arm from the wall above down to the housing.
+  ctx.strokeStyle = '#2a3040';
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.moveTo(CAMERA.x - 4, CAMERA.y - 44);
+  ctx.lineTo(CAMERA.x - 4, CAMERA.y - 12);
+  ctx.stroke();
+  ctx.fillStyle = '#2a3040';
+  ctx.beginPath();
+  ctx.arc(CAMERA.x - 4, CAMERA.y - 12, 5, 0, Math.PI * 2);
+  ctx.fill();
+  // Housing with vent slats.
+  ctx.fillStyle = cam.offT > 0 ? '#232833' : '#3d3a55';
   roundRect(ctx, CAMERA.x - 16, CAMERA.y - 12, 32, 24, 4);
   ctx.fill();
   ctx.strokeStyle = cam.offT > 0 ? '#555' : PALETTE.red;
   ctx.lineWidth = 2;
   ctx.stroke();
-  ctx.fillStyle = cam.offT > 0 ? '#666' : '#ff2e3e';
+  ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 3; i += 1) {
+    ctx.beginPath();
+    ctx.moveTo(CAMERA.x - 14, CAMERA.y - 6 + i * 5);
+    ctx.lineTo(CAMERA.x - 6, CAMERA.y - 6 + i * 5);
+    ctx.stroke();
+  }
+  // Lens barrel + glass lens.
+  ctx.fillStyle = '#171a26';
   ctx.beginPath();
-  ctx.arc(CAMERA.x + 8, CAMERA.y, 6, 0, Math.PI * 2);
+  ctx.arc(CAMERA.x + 10, CAMERA.y, 9, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = cam.offT > 0 ? '#3a3f4d' : '#ff2e3e';
+  ctx.beginPath();
+  ctx.arc(CAMERA.x + 10, CAMERA.y, 6, 0, Math.PI * 2);
   ctx.fill();
   // Rev4: a thin white ring around the lens, so the unit reads as a
   // camera — the laser's emitter — at 768x480, not a red dot.
@@ -765,8 +1142,20 @@ function drawCameraUnit(ctx, s) {
     ctx.strokeStyle = '#f2ead8';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.arc(CAMERA.x + 8, CAMERA.y, 8, 0, Math.PI * 2);
+    ctx.arc(CAMERA.x + 10, CAMERA.y, 8, 0, Math.PI * 2);
     ctx.stroke();
+    // Glass glint on the lens.
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.beginPath();
+    ctx.arc(CAMERA.x + 8, CAMERA.y - 2.5, 1.6, 0, Math.PI * 2);
+    ctx.fill();
+    // Status LED: blinks on the live clock (1.4 Hz), red while the
+    // camera watches, dark while it is off.
+    const led = 0.5 + 0.5 * Math.sin(s.time * Math.PI * 2 * 1.4);
+    ctx.fillStyle = `rgba(255,46,62,${0.35 + 0.65 * led})`;
+    ctx.beginPath();
+    ctx.arc(CAMERA.x - 12, CAMERA.y + 8, 2.2, 0, Math.PI * 2);
+    ctx.fill();
   }
   ctx.fillStyle = '#f2ead8';
   ctx.font = 'bold 10px ' + FONT;
@@ -903,19 +1292,36 @@ function drawHud(ctx, s) {
   ctx.font = `11px ${FONT}`;
   ctx.fillText('WASD move · SPACE jump · C crouch · E interact · P pause · R restart', 1266, FIELD.height - 18);
 
-  // Interaction prompt, live from the nearest interactable.
-  if (s.screen === SCREEN_PLAY && s.prompt) {
-    ctx.font = `bold 15px ${FONT}`;
-    const tw = ctx.measureText(s.prompt).width + 24;
+  // Interaction prompt, live from the nearest interactable — rev5: it
+  // is ANCHORED to its object (just above the vitrine / terminal it
+  // names, with a thin stem down to it), smaller and quieter than the
+  // old top-centre pill, so it never floats in the middle of the frame
+  // or covers the alarm meter. It is still live from state: it appears
+  // only while the thief stands near that object, and its text is the
+  // live prompt from the world.
+  if (s.screen === SCREEN_PLAY && s.prompt && s.promptAnchor) {
+    ctx.font = `bold 13px ${FONT}`;
+    const tw = ctx.measureText(s.prompt).width + 20;
+    const ax = s.promptAnchor.x;
+    const ay = s.promptAnchor.y;
+    const px = Math.max(6, Math.min(FIELD.width - tw - 6, ax - tw / 2));
+    const py = Math.max(60, ay - 32);
+    // Stem from the pill down to the object it names.
+    ctx.strokeStyle = 'rgba(232,182,76,0.7)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(px + tw / 2, py + 24);
+    ctx.lineTo(ax, ay - 2);
+    ctx.stroke();
     ctx.fillStyle = 'rgba(13,17,32,0.92)';
-    roundRect(ctx, FIELD.width / 2 - tw / 2, 66, tw, 28, 8);
+    roundRect(ctx, px, py, tw, 24, 8);
     ctx.fill();
     ctx.strokeStyle = PALETTE.gold;
     ctx.lineWidth = 1;
     ctx.stroke();
     ctx.fillStyle = PALETTE.goldBright;
     ctx.textAlign = 'center';
-    ctx.fillText(s.prompt, FIELD.width / 2, 85);
+    ctx.fillText(s.prompt, px + tw / 2, py + 16);
   }
   // Hack progress bar under the prompt.
   if (s.hackProgress > 0 && s.hackProgress < 2) {
@@ -1020,6 +1426,24 @@ export function render(ctx, s) {
   drawLaser(ctx, s);
   for (const g of s.guards) drawGuard(ctx, s, g);
   if (s.decoy) drawDecoy(ctx, s);
+  // Rev5: on the win screen the thief stands at the service door in a
+  // dark corner, small at 768x480. A warm gold-white glow behind him —
+  // the EXIT sign's light spilling onto the escape — lifts him off the
+  // dark door so the eye finds him first, before the grade text.
+  if (s.screen === SCREEN_WIN) {
+    const p = s.player;
+    const glow = ctx.createRadialGradient(
+      p.x + p.width / 2, p.y + p.height / 2, 6,
+      p.x + p.width / 2, p.y + p.height / 2, 95,
+    );
+    glow.addColorStop(0, 'rgba(255,233,170,0.55)');
+    glow.addColorStop(0.5, 'rgba(255,217,122,0.22)');
+    glow.addColorStop(1, 'rgba(255,217,122,0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(p.x + p.width / 2, p.y + p.height / 2, 95, 0, Math.PI * 2);
+    ctx.fill();
+  }
   drawThief(ctx, s);
   drawBarks(ctx, s);
   drawParticles(ctx, s);

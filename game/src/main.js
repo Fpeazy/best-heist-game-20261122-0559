@@ -65,6 +65,12 @@ if (shotName) {
     detections: state.detections,
     kancil: state.loot.kancil,
     hacked: state.terminalHacked,
+    // Guard poses at the freeze, so a staged frame can be checked
+    // without guessing from pixels (rev5: which way the win cone points).
+    guards: state.guards.map((g) => ({ x: Math.round(g.x), facing: g.facing, state: g.state })),
+    thief: { x: Math.round(state.player.x), y: Math.round(state.player.y) },
+    cameraAngle: Number(state.camera.angle.toFixed(2)),
+    cameraOff: state.camera.offT,
   };
   announce();
 } else {

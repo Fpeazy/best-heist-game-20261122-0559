@@ -335,15 +335,18 @@ function nearInteractable(s) {
   const cy = p.y + p.height / 2;
   const near = (x, y, range = 78) => Math.hypot(cx - x, cy - y) < range;
   // Loot first: the right vitrine stands close to the terminal, and the
-  // terminal's wider radius must not swallow a loot grab.
+  // terminal's wider radius must not swallow a loot grab. Each target
+  // also carries an anchor: the top centre of the object it belongs to,
+  // so the interaction pill can sit ON its object instead of floating
+  // at the top of the screen (rev5).
   if (!s.loot.kancil && near(VITRINES.centre.x + 60, VITRINES.centre.y + 60, 96)) {
     return s.terminalHacked
-      ? { kind: 'kancil', label: 'E — TAKE THE KANCIL EMAS' }
-      : { kind: 'kancil', label: 'E — SMASH THE GLASS (+40% ALARM)' };
+      ? { kind: 'kancil', label: 'E — TAKE THE KANCIL EMAS', anchor: { x: VITRINES.centre.x + 60, y: VITRINES.centre.y } }
+      : { kind: 'kancil', label: 'E — SMASH THE GLASS (+40% ALARM)', anchor: { x: VITRINES.centre.x + 60, y: VITRINES.centre.y } };
   }
-  if (!s.loot.idol && near(VITRINES.left.x + 35, VITRINES.left.y + 50, 80)) return { kind: 'idol', label: 'E — TAKE THE JADE IDOL (+3 coins)' };
-  if (!s.loot.tiara && near(VITRINES.right.x + 35, VITRINES.right.y + 50, 80)) return { kind: 'tiara', label: 'E — TAKE THE PEARL TIARA (+3 coins)' };
-  if (!s.terminalHacked && near(TERMINAL.x + 28, TERMINAL.y + 40, 72)) return { kind: 'terminal', label: 'E — HACK SECURITY TERMINAL (hold)' };
+  if (!s.loot.idol && near(VITRINES.left.x + 35, VITRINES.left.y + 50, 80)) return { kind: 'idol', label: 'E — TAKE THE JADE IDOL (+3 coins)', anchor: { x: VITRINES.left.x + 35, y: VITRINES.left.y } };
+  if (!s.loot.tiara && near(VITRINES.right.x + 35, VITRINES.right.y + 50, 80)) return { kind: 'tiara', label: 'E — TAKE THE PEARL TIARA (+3 coins)', anchor: { x: VITRINES.right.x + 35, y: VITRINES.right.y } };
+  if (!s.terminalHacked && near(TERMINAL.x + 28, TERMINAL.y + 40, 72)) return { kind: 'terminal', label: 'E — HACK SECURITY TERMINAL (hold)', anchor: { x: TERMINAL.x + 28, y: TERMINAL.y } };
   return null;
 }
 
@@ -513,6 +516,7 @@ export function update(s, input, dt) {
     s.hackProgress = Math.max(0, s.hackProgress - dt * 2);
   }
   s.prompt = target ? target.label : '';
+  s.promptAnchor = target ? target.anchor : null;
 
   // --- Tools. ---
   if (input.useEmp) useTool(s, 'emp');

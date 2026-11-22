@@ -363,7 +363,21 @@ export function buildShot(name) {
       { x: 520, y: 440, action: 'wait', seconds: 6 },
       { action: 'climbVent' },
       { x: 800, y: 168 },
-      { x: 900, y: 168, action: 'wait', seconds: 5 },
+      // Rev5: 3s here, not 5 (and not 2). The freeze must land while the
+      // floor guard pauses at the LEFT end of his patrol, facing left,
+      // cone pointing out of the frame's centre toward the left wall.
+      // At 2s the freeze landed at t≈53.2 with the guard SUSPECT at
+      // x=840 facing right: the thief had crossed the floor while the
+      // guard still paused at the right end facing right, so the thief
+      // walked into the right-pointing cone (740-1005) and suspicion
+      // rose. One second later the crossing starts after the guard has
+      // begun his leftward leg, and the thief — much faster, walking
+      // left from 1220 to 660 — stays to the RIGHT of the guard the
+      // whole way, outside the left-pointing cone, so no suspicion
+      // rises at all; the freeze lands at t≈54.2 with the guard
+      // pausing at x=520, facing left. The camera is still dead from
+      // the hack at this point, so the frame keeps CAMERA OFF.
+      { x: 900, y: 168, action: 'wait', seconds: 3 },
       { x: 1120, y: 168 },
       // Crawl to the vent's right end and drop there: dropping off the
       // left end (700) lands the thief on the vent stairs, where the
@@ -378,6 +392,13 @@ export function buildShot(name) {
       { x: 1210 },
     ];
     stepWorld(state, plan, 120 / STEP);
+    // Rev5: the freeze is the win moment, not the walk that got there.
+    // Clear floaters and particles: the "+1 COIN" from the coin at 1160
+    // used to hang over the thief at the service door, and burst
+    // particles from the Kancil grab littered the gold. The win screen
+    // numbers are untouched — they are the live state of this run.
+    state.floaters = [];
+    state.particles = [];
     return state;
   }
 
