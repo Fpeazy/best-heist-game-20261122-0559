@@ -318,8 +318,30 @@ export function buildShot(name) {
     // The cone fills suspicion, the chase starts (+15%), the red laser
     // sweeps across the thief (+25%). Freeze the moment the live alarm
     // meter crosses 66%.
+    // Rev8: the freeze is the BLACKOUT, not the chase alone. The thief
+    // fires the EMP mid-chase (3 coins in hand: 250, 540, 580), then
+    // runs RIGHT for ~1s and the frame freezes ~1s into the blackout
+    // (blackoutT ~2) with the guard still CHASE. Direction matters:
+    // at the EMP the guard is LEFT of the thief (gap ~86px) and closes
+    // at 305 px/s, so walking left runs INTO him (caught in ~0.15s,
+    // flipping him to 'search' and killing the red chase cone) and
+    // standing still is caught in ~0.28s. Running right, the gap only
+    // closes at 40 px/s; the thief leaps the statue mid-flight (the
+    // guard runs under him — the catch check needs vertical overlap
+    // too) and lands by the terminal with the chase still live.
     const plan = [{ x: 800 }, { x: 800, action: 'hold', seconds: 60 }];
     stepWorld(state, plan, 60 / STEP, (s) => s.alarm >= 66);
+    stepWorld(state, [{ x: 800, action: 'emp' }], 5 / STEP);
+    // 55 steps (~0.93s, blackoutT ~2.05): the thief vaults the statue
+    // while the guard runs underneath him. The catch check needs
+    // vertical overlap (|dy| < 46) as well as horizontal, so the thief
+    // is safe while airborne over the statue (|dy| 61-106 at steps
+    // 30-55) — but at step 60 he has dropped to |dy| 34 with the
+    // guard directly below and the staged catch flips the guard to
+    // 'search'. 55 steps is the last safe step of the window, and the
+    // closest to "1s into the blackout". Deterministic (seed 1), so
+    // the window is exact, not a race.
+    stepWorld(state, [{ x: 1160 }], 55);
     return state;
   }
 
