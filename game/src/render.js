@@ -3256,8 +3256,11 @@ function drawHud(ctx, s) {
   // effect / duration, so the bar now shows cost AND effect.
   // Rev11: four cards now — LOCKPICK joins (key 4, cost live from
   // TOOLS, affordability like the others). The cards are narrower
-  // (186) so the row still clears the controls hint; a gadget the
-  // planning screen chose is FREE once, and the card says so.
+  // (188) so the row clears the controls hint: at 204 the WASD chip
+  // sat on the LOCKPICK card's right edge (cards ended at 852, the
+  // hint starts at ~815). At 188 the cards end at 788, a clear ~27px
+  // gap to the hint. A gadget the planning screen chose is FREE once,
+  // and the card says so.
   const tools = [
     { id: 'emp', key: TOOLS.emp.key, name: TOOLS.emp.name, cost: TOOLS.emp.cost, blurb: 'camera off 5s + BLACKOUT', icon: 'bolt' },
     { id: 'decoy', key: TOOLS.decoy.key, name: TOOLS.decoy.name, cost: TOOLS.decoy.cost, blurb: 'lure a guard', icon: 'bell' },
@@ -3266,7 +3269,7 @@ function drawHud(ctx, s) {
   ];
   const cardY = FIELD.height - 46;
   const cardH = 42;
-  const cardW = 204;
+  const cardW = 188;
   let tx = 12;
   for (const t of tools) {
     // Rev12 — Gadget Inventory: the stock count lives on the card
@@ -3728,9 +3731,9 @@ function drawWin(ctx, s) {
   // Rev12 — Mission Debrief: the old stats table becomes a proper
   // two-column debrief. Left: the run's numbers (all live). Right:
   // what happened — heist rank, peak heat, ghost streak, close calls,
-  // and the gadgets actually used, all live from state. Same panel
-  // footprint as the rev11 table (430-850 x 328-474), so the floor,
-  // the open vitrine and the thief at the door stay clear.
+  // and the gadgets actually used, all live from state. Same y
+  // footprint as the rev11 table (328-474), widened to 380-900, so
+  // the floor, the open vitrine and the thief at the door stay clear.
   const gadgetsUsedText = (() => {
     const used = ['emp', 'decoy', 'flash', 'lockpick']
       .filter((k) => (s.gadgetsUsed && s.gadgetsUsed[k] > 0))
@@ -3754,8 +3757,18 @@ function drawWin(ctx, s) {
     ['GADGETS USED', gadgetsUsedText],
     ['DETECTIONS', s.detections === 0 ? 'NEVER SEEN' : `${s.detections} × SEEN`],
   ];
-  const tx0 = 430;
-  const tw = 420;
+  // Rev13 — the rev12 stacked label-above-value rows crowded: six
+  // rows of two text lines in 146px put each value on the next row's
+  // label, and the last value sat on the panel's bottom edge. One
+  // line per row now (label left, value right-aligned), a wider panel
+  // (380-900) so the longest live value ("EMP ×2 · FLASH ×2") clears
+  // its label, a firmer centre divider and clearer row rules. Same y
+  // footprint (328-474): the floor, the open vitrine and the thief at
+  // the door stay clear, and the "Press R" line at 494 still clears
+  // the panel. Values stay live from state; a long live value shrinks
+  // (13 -> 11 -> 10) before it may touch its label.
+  const tx0 = 380;
+  const tw = 520;
   const ty0 = 328;
   ctx.fillStyle = 'rgba(13,17,32,0.85)';
   roundRect(ctx, tx0, ty0, tw, 146, 10);
@@ -3764,38 +3777,44 @@ function drawWin(ctx, s) {
   ctx.lineWidth = 1.5;
   ctx.stroke();
   // Centre divider between the two columns.
-  ctx.strokeStyle = 'rgba(232,182,76,0.3)';
-  ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(232,182,76,0.45)';
+  ctx.lineWidth = 1.5;
   ctx.beginPath();
   ctx.moveTo(tx0 + tw / 2, ty0 + 10);
   ctx.lineTo(tx0 + tw / 2, ty0 + 136);
   ctx.stroke();
   const drawDebriefCol = (rows, x0, w, valueSize = 13) => {
     rows.forEach(([label, value], i) => {
-      const ry = ty0 + 24 + i * 22;
+      const ry = ty0 + 26 + i * 21;
+      let size = valueSize;
+      ctx.font = `10px ${FONT}`;
+      const labelW = ctx.measureText(label).width;
+      ctx.font = `bold ${size}px ${FONT}`;
+      while (size > 10 && labelW + ctx.measureText(value).width > w - 36) {
+        size -= 1;
+        ctx.font = `bold ${size}px ${FONT}`;
+      }
       ctx.textAlign = 'left';
       ctx.font = `10px ${FONT}`;
       ctx.fillStyle = PALETTE.muted;
-      ctx.fillText(label, x0 + 12, ry - 2);
-      ctx.textAlign = 'left';
-      ctx.font = `bold ${valueSize}px ${FONT}`;
+      ctx.fillText(label, x0 + 14, ry);
+      ctx.textAlign = 'right';
+      ctx.font = `bold ${size}px ${FONT}`;
       ctx.fillStyle = PALETTE.goldBright;
-      ctx.fillText(value, x0 + 12, ry + 12);
+      ctx.fillText(value, x0 + w - 14, ry);
       if (i < rows.length - 1) {
-        ctx.strokeStyle = 'rgba(232,182,76,0.18)';
+        ctx.strokeStyle = 'rgba(232,182,76,0.22)';
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(x0 + 12, ry + 18);
-        ctx.lineTo(x0 + w - 12, ry + 18);
+        ctx.moveTo(x0 + 14, ry + 8);
+        ctx.lineTo(x0 + w - 14, ry + 8);
         ctx.stroke();
       }
     });
   };
-  // Two columns share the 146px height: label above value, 22px a row.
-  // The right column's GADGETS value is the longest ("EMP ×2 · FLASH
-  // ×2" at 11px fits its 198px column); shrink it if it ever runs long.
+  // Two columns share the 146px height: one line per row, 21px a row.
   drawDebriefCol(leftRows, tx0, tw / 2);
-  drawDebriefCol(rightRows, tx0 + tw / 2, tw / 2, 11);
+  drawDebriefCol(rightRows, tx0 + tw / 2, tw / 2, 12);
   ctx.textAlign = 'center';
   ctx.font = `14px ${FONT}`;
   line('Press R to run it again — faster, quieter, richer.', FIELD.width / 2, 494, PALETTE.muted);

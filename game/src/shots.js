@@ -361,73 +361,95 @@ export function buildShot(name) {
   }
 
   if (name === 'stealth') {
-    // The rev11 stealth frame shows a NEW system in action: the thief
-    // at the security terminal, mid-hack, the minigame panel open with
-    // its needle inside the green zone. The route in is the win
-    // route's opening (wait behind the crate until the floor guard
-    // turns left at 740, EMP at 580, walk to the terminal) so the
-    // thief arrives unseen; the freeze lands with the needle at
-    // 50-55, just after the blackout ends, so the panel and the hall
-    // both read. The EMP is paid (3 coins: 240, 540, 580).
-    const plan = [
-      { x: 250 },
-      { x: 350, action: 'waitGuardLeft' },
-      { x: 540 },
-      { x: 580, action: 'emp' },
-      { x: 1100 },
-      { x: 1100, action: 'openHack' },
-    ];
-    stepWorld(state, plan, 60 / STEP);
-    // Freeze the moment the needle sits mid-green (50-55): the panel
-    // shows a live needle inside the zone, hits 0/3, and the blackout
-    // (3s from the EMP) has just ended, so the hall is lit again.
-    stepWorld(state, [], 3 / STEP, (s) => s.minigame && s.minigame.active
-      && s.minigame.needle >= 50 && s.minigame.needle <= 55);
+    // Rev13 — the rev11/12 stealth frame showed the hacking minigame,
+    // but the two rev12 systems it was supposed to showcase never
+    // read: the thief at the terminal stands in NO shadow zone, and
+    // both guards were patrol/return (the LKP marker only draws for
+    // search/suspect). This frame shows them both, from the real rules:
+    // the thief is seen, FLASHes the chasing guard blind, and hides
+    // crouched in the ground shadow zone (500-590) while the guard
+    // SEARCHES the last-seen spot — IN SHADOW pill + teal ring on the
+    // thief, amber "?" ring at the last-seen spot, SEARCHING label.
+    // The route, measured in node (rev13 probes 9-12):
+    //  - Walk to 860 and stand 2s: the guard finishes investigating
+    //    the walk noise and his suspicion decays to 0 (patrol). A
+    //    bare detour without the stand leaves him investigating at
+    //    suspicion ~33, ten pixels from the thief — the chase then
+    //    triggers with the guard adjacent and the staged catch
+    //    flip-flops chase<->search every step (det 2000+, alarm 100).
+    //  - Walk back to 700 (the alert shot's walk), pace 560-620:
+    //    the guard investigates the pace noise and chases with ~60px
+    //    of separation (det 1, alarm ~38 at the trigger).
+    //  - FLASH at once, where the thief stands: the guard is blinded
+    //    3s, so he cannot catch the thief while the thief moves, and
+    //    loses the trail after 2s (chase -> search, alarm -6).
+    //  - Run to 545 and crouch: the thief is inside the shadow zone
+    //    (centre 565) before the guard flips to search. The freeze
+    //    lands the step the guard enters search: alarm ~33, tier 0,
+    //    the camera still live, the Kancil vitrine in frame.
+    // The minigame panel leaves this frame (the minigame itself still
+    // runs: the win route hacks the terminal through it, play-tested).
+    stepWorld(state, [
+      { x: 860 },
+      { x: 860, action: 'hold', seconds: 2 },
+    ], 20 / STEP);
+    stepWorld(state, [{ x: 700 }], 10 / STEP);
+    stepWorld(state, [
+      { x: 560, x1: 620, action: 'pace' },
+    ], 40 / STEP, (s) => s.guards[0].state === 'chase');
+    const fx = Math.round(state.player.x);
+    stepWorld(state, [{ x: fx, action: 'flash' }], 5 / STEP);
+    stepWorld(state, [
+      { x: 545 },
+      { x: 545, action: 'wait', seconds: 10 },
+    ], 12 / STEP, (s) => s.guards[0].state === 'search' && s.shadow.inShadow);
     return state;
   }
 
   if (name === 'alert') {
-    // The alarm is earned honestly, but NOT by kiting the floor guard.
-    // Kiting was tried three ways and every one ends the same way:
-    // the thief cannot outrun a chasing guard (265 vs 305), so any
-    // flee ends with the guard adjacent to a standing thief, and the
-    // staged catch then flips chase<->search every step (+1 detection
-    // and +15% alarm per step — 3227 detections for a still hold,
-    // 6076 for a flee to 860, 7235 for a flee to 400). The crate at
-    // 430 cannot break a chase either: the guard walks through it and
-    // keeps seeing the thief from the other side. So the alarm is
-    // driven by the CAMERA instead: the thief stands at 860, where the
-    // camera's beam reaches him but the crate at 760 blocks the floor
-    // guard's line of sight (14 lock-ons, 0 chases, measured; hits
-    // ~4.4s apart). Two lock-ons (+25% each) plus creep put the meter
-    // near 54% — the rest is two laser-grid crossings (+10% each,
-    // the thief really does cross the beams) and the chase itself
-    // (+15%), so the freeze lands near 92% (tier 2 LOCKDOWN). Then
-    // the thief walks into the guard's lane at 700 and PACES between
-    // the crates (520-740): running at full speed is loud, so the
-    // guard investigates the noise and follows it, and pacing keeps
-    // the thief between the crates — visible, never shielded — while
-    // his suspicion fills. The lane is the widest that stays clear
-    // of both crates (the thief's body at centre 520 is [500,540],
-    // at 740 it is [720,760]). Running left past the crate at 430
-    // shields the thief and suspicion decays before it hits 100 (that
-    // attempt ended with the guard back on patrol); crouch-walking
-    // away does not work either (130px/s against a suspect guard at
-    // ~121px/s barely grows the gap, and crossing the crate at 760
-    // cuts the line of sight). The pace triggers the chase with the
-    // guard ~129px behind the thief (a 100px lane only leaves ~29px
-    // — the guard's centre is p.x+19, the thief's p.x+20 — and the
-    // guard closes to catch range during the EMP step). The run stops
-    // at the chase trigger; the EMP fires where the thief stands and
-    // he keeps running away from the guard, so the guard (closing
-    // 40px/s) cannot reach catch range before the freeze.
+    // Rev13 — the alarm is earned honestly, but NOT by kiting the
+    // floor guard, and NOT by the rev12 pace: pacing the wide lane
+    // (520-740) crosses the laser grid (596/660/724) every 2s for
+    // +10% a crossing, so the meter pins at 99% (tier 2 LOCKDOWN)
+    // before the chase even triggers. The rev13 route freezes at
+    // ~75% (tier 2 ALERT, door locked) instead — measured in node
+    // (rev13 probes 2-13), same dramatic beat (THE BLACKOUT, thief
+    // haloed, red cone, Kancil, CAMERA OFF, DOOR LOCKED -> ROOF):
+    //  - One camera lock-on only (waitAlarm 25): the thief stands at
+    //    860, where the beam reaches him but the crate at 760 blocks
+    //    the floor guard's line of sight. Phase 1 ends at alarm ~39
+    //    (one lock-on +25, grid crossings on the walk in, creep).
+    //  - Walk to 700, crouch-wait 1.0s at 590, pace the NARROW lane
+    //    560-620: the guard investigates the pace noise and chases
+    //    with ~60px of separation, 2s in. The freeze lands at ~75%
+    //    (tier 2 ALERT, door locked -> ROOF): one lock-on +25, one
+    //    walk grid +10, the crouch-wait's body across the 596 laser
+    //    grid +10, the chase +15, creep. The stop is the chase
+    //    itself — the rev12 stop (alarm >= 66 AND chase) would also
+    //    fire now, but the chase alone is the honest trigger.
+    //    A 1.5s wait lets the guard close in and the staged catch
+    //    flip-flops (det 10, alarm 99); a 2.0s wait never triggers a
+    //    clean chase at all (det 2828). 1.0s is the measured value.
+    //  - EMP where the thief stands, run away from the guard: the
+    //    blackout (3s) and camera-off (5s) still frame the freeze.
+    // Lanes that do NOT work, measured: 520-580 (a 60px lane lets the
+    // guard catch the thief in the same update the chase triggers, so
+    // the staged catch flip-flops chase<->search every step: det
+    // 2000+, alarm 100); standing still / holding (same catch, the
+    // guard walks up adjacent); 530-590 and 500-560 (the chase never
+    // triggers cleanly). Without the crouch-wait the freeze lands at
+    // 65% (tier 1, door NOT locked): the second lock-on would add
+    // +25 and overshoot to ~90, and the one grid crossing that would
+    // lift it to ~75 is blocked by the 2s grid cooldown in every lane
+    // tried — the crouch-wait is what buys that crossing.
     const plan = [
       { x: 860 },
-      { x: 860, action: 'waitAlarm', alarm: 50 },
+      { x: 860, action: 'waitAlarm', alarm: 25 },
       { x: 700 },
-      { x: 520, x1: 740, action: 'pace' },
+      { x: 590, action: 'wait', seconds: 1.0 },
+      { x: 560, x1: 620, action: 'pace' },
     ];
-    stepWorld(state, plan, 60 / STEP, (s) => s.alarm >= 66 && s.guards[0].state === 'chase');
+    stepWorld(state, plan, 60 / STEP, (s) => s.guards[0].state === 'chase');
     const cx = Math.round(state.player.x + state.player.width / 2);
     const gx = Math.round(state.guards[0].x + 19);
     const dir = cx < gx ? -1 : 1; // keep running away from the guard
