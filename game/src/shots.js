@@ -272,6 +272,13 @@ export function buildShot(name) {
     // The hall alive behind the title: guards patrol, the camera sweeps,
     // the thief waits by the entrance. Freeze, then lay the title over it.
     stepWorld(state, [], 6 / STEP);
+    // Rev6: the spawn (x=56) pins the thief to the left edge of the
+    // frame — squeezed against the wall at 768x480. Pose him a step
+    // into the hall (x=170, clear floor between the entrance steps and
+    // the first coin): still "waiting by the entrance", no longer
+    // cramped. The camera beam at the freeze (angle ~2.19) passes
+    // ~145px right of the tagline, so the beam needs no move.
+    state.player.x = 170;
     state.screen = SCREEN_TITLE;
     return state;
   }
