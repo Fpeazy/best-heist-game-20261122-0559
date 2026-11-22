@@ -7,7 +7,7 @@ import { attachInput, clearEdgeFlags, createInput } from './input.js';
 import { sfx } from './audio.js';
 import {
   SCREEN_LOSE, SCREEN_PLAY, SCREEN_TITLE, SCREEN_WIN,
-  newWorld, startGame, update,
+  heatLevel, newWorld, startGame, update,
 } from './world.js';
 import { buildShot } from './shots.js';
 
@@ -111,6 +111,17 @@ if (shotName) {
     thief: { x: Math.round(state.player.x), y: Math.round(state.player.y) },
     cameraAngle: Number(state.camera.angle.toFixed(2)),
     cameraOff: state.camera.offT,
+    // Rev12 live state, for the verifier: heat, shadow, inventory,
+    // ghost streak, close calls, tracker and network status.
+    heatPeak: Math.floor(state.heatPeak || 0),
+    inShadow: Boolean(state.shadow && state.shadow.inShadow),
+    inventory: state.inventory,
+    gadgetsUsed: state.gadgetsUsed,
+    ghostStreak: state.ghostStreak || 0,
+    closeCalls: state.closeCalls || 0,
+    mission: state.mission,
+    heat: heatLevel(state),
+    netLive: !(state.camera.offT > 0 || state.terminalHacked),
   };
   announce();
 } else {

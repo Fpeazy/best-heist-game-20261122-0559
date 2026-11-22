@@ -4,14 +4,14 @@
 // big white silhouette with a dark outline, findable at a glance.
 import {
   CAMERA, COINS, COVER, EXTRA_LOOT, FIELD, GUARD, HIDE_SPOTS, LOCKER,
-  PALETTE, PLATFORMS, SERVICE_DOOR, SWITCHES, TERMINAL, TOOLS, VITRINES,
-  FONT, FONT_DISPLAY,
+  PALETTE, PLATFORMS, SERVICE_DOOR, SHADOW_ZONES, SWITCHES, TERMINAL,
+  TOOLS, VITRINES, FONT, FONT_DISPLAY,
 } from './config.js';
 import { coneRayHit, laserHit } from './vision.js';
 import { mulberry32 } from './random.js';
 import {
   SCREEN_LOSE, SCREEN_PLAY, SCREEN_TITLE, SCREEN_WIN,
-  detectionWord, objectiveLine,
+  detectionWord, heatLevel, objectiveLine,
 } from './world.js';
 
 // Rev11 — pre-heist planning is a main.js screen ('planning'); world.js
@@ -55,7 +55,7 @@ GRADE.height = 720;
 {
   const gc = GRADE.getContext('2d');
   const warm = gc.createRadialGradient(660, 330, 80, 660, 330, 620);
-  warm.addColorStop(0, 'rgba(255,205,120,0.05)');
+  warm.addColorStop(0, 'rgba(255,205,120,0.07)');
   warm.addColorStop(1, 'rgba(255,205,120,0)');
   gc.fillStyle = warm;
   gc.fillRect(0, 0, 1280, 720);
@@ -254,6 +254,90 @@ function drawAmbient(ctx, s) {
     ctx.fillStyle = `rgba(255,240,200,${(m.alpha * twinkle).toFixed(3)})`;
     ctx.beginPath();
     ctx.arc(x, y, m.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/**
+ * Rev12 — Shadow Stealth: the shadow zones as real places in the room.
+ * A deep blue-teal dark patch with a soft rim and a small SHADOW tag,
+ * so the player can see where to hide before stepping in. Drawn over
+ * the room but under every entity, so nothing is ever hidden by it.
+ */
+function drawShadowZones(ctx, s) {
+  for (const z of SHADOW_ZONES) {
+    ctx.fillStyle = 'rgba(8,16,32,0.42)';
+    roundRect(ctx, z.x, z.y, z.w, z.h, 8);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(46,196,182,0.28)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    // A faint teal sheen along the top edge: the shadow has a shape,
+    // it is not a hole cut in the floor.
+    ctx.fillStyle = 'rgba(46,196,182,0.14)';
+    ctx.fillRect(z.x + 4, z.y + 3, z.w - 8, 2);
+    ctx.fillStyle = 'rgba(46,196,182,0.75)';
+    ctx.font = `bold 9px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.fillText('SHADOW', z.x + z.w / 2, z.y + 13);
+  }
+}
+
+/**
+ * Rev12 — Last Known Position: where a hunting guard last saw the
+ * thief. A pulsing amber ring + "?" at the guard's lastSeen spot,
+ * live from state — it appears while the guard is in suspect/search
+ * with a remembered spot, and vanishes the moment the guard gives up
+ * (patrol/return) or the run ends. Pure function of s.time: the pulse
+ * is deterministic, no Math.random.
+ */
+function drawLastKnownMarkers(ctx, s) {
+  for (const g of s.guards) {
+    if (!g.lastSeenSet) continue;
+    if (g.state !== 'search' && g.state !== 'suspect') continue;
+    const x = g.lastSeenX;
+    const y = g.lastSeenY;
+    const pulse = 0.5 + 0.5 * Math.sin(s.time * 4);
+    const r = 11 + 4 * pulse;
+    ctx.save();
+    ctx.strokeStyle = `rgba(255,176,32,${(0.45 + 0.45 * pulse).toFixed(3)})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = `rgba(255,176,32,${(0.25 + 0.2 * pulse).toFixed(3)})`;
+    ctx.beginPath();
+    ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffb020';
+    ctx.font = `bold 15px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.fillText('?', x, y - r - 4);
+    ctx.restore();
+  }
+}
+
+/**
+ * Rev12 — Dynamic Lighting, deepened: every guard carries his own
+ * pool of warm torch-light on the floor, so the light moves with the
+ * patrol instead of sitting still. Flat fills, drawn over the room
+ * and under the cones — the thief and the loot still read first.
+ */
+function drawGuardLightPools(ctx, s) {
+  for (const g of s.guards) {
+    if (g.state === 'down') continue;
+    const cx = g.x + g.width / 2;
+    const fy = g.y + g.height + 2;
+    ctx.fillStyle = 'rgba(255,205,110,0.10)';
+    ctx.beginPath();
+    ctx.ellipse(cx, fy, 52, 9, 0, 0, Math.PI * 2);
+    ctx.fill();
+    const halo = ctx.createRadialGradient(cx, g.y + g.height / 2, 6, cx, g.y + g.height / 2, 52);
+    halo.addColorStop(0, 'rgba(255,220,150,0.07)');
+    halo.addColorStop(1, 'rgba(255,220,150,0)');
+    ctx.fillStyle = halo;
+    ctx.beginPath();
+    ctx.arc(cx, g.y + g.height / 2, 52, 0, Math.PI * 2);
     ctx.fill();
   }
 }
@@ -563,6 +647,31 @@ function drawThief(ctx, s) {
     ctx.arc(x + w * 0.5, y + h * 0.5, 52, 0, Math.PI * 2);
     ctx.fill();
   }
+  // Rev12 — IN SHADOW: a teal ring around the thief plus a small pill
+  // under his feet, live from s.shadow.inShadow. The pill sits BELOW
+  // the feet (not above the head) so it can never collide with a guard
+  // bark bubble, which lifts above the thief's head.
+  if (s.shadow && s.shadow.inShadow) {
+    ctx.strokeStyle = 'rgba(46,196,182,0.85)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.ellipse(x + w * 0.5, y + h * 0.5, w * 0.72, h * 0.58, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.font = `bold 10px ${FONT}`;
+    const label = 'IN SHADOW';
+    const lw = ctx.measureText(label).width + 16;
+    const lx = Math.max(6, Math.min(FIELD.width - lw - 6, x + w / 2 - lw / 2));
+    const ly = y + h + 8;
+    ctx.fillStyle = 'rgba(13,17,32,0.92)';
+    roundRect(ctx, lx, ly, lw, 16, 8);
+    ctx.fill();
+    ctx.strokeStyle = PALETTE.teal;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = PALETTE.teal;
+    ctx.textAlign = 'center';
+    ctx.fillText(label, lx + lw / 2, ly + 11.5);
+  }
   // Rev4: a white halo ring + soft white glow, so the thief reads at
   // 768x480 on the navy wall and the dark carpet. The white silhouette
   // alone sank into the background at contact-sheet size; the halo is
@@ -813,6 +922,12 @@ function drawGuard(ctx, s, g) {
  * overlap a vitrine it is lifted above that vitrine's top edge instead.
  */
 function drawBarks(ctx, s) {
+  // Rev12 (cacat rev11 b): barks are play-only. On the win screen the
+  // run ends with barkT still > 0 (the last EMP blinds a guard ~2.8s
+  // before the door), and "My eyes!" used to print twice — once by
+  // the guard, once ghosting behind the stats table. No bark ever
+  // renders under an overlay now.
+  if (s.screen !== SCREEN_PLAY) return;
   ctx.save();
   for (const g of s.guards) {
     if (g.barkT <= 0) continue;
@@ -1427,6 +1542,16 @@ function drawRoom(ctx, s) {
     ctx.strokeStyle = PALETTE.goldDim;
     ctx.lineWidth = 3;
     ctx.stroke();
+    // Rev12: the moon wears a soft halo, so the windows glow instead
+    // of sitting as flat dark arches — cool moonlight against the
+    // chandelier's warm gold.
+    const moonHalo = ctx.createRadialGradient(wx + 78, 92, 4, wx + 78, 92, 44);
+    moonHalo.addColorStop(0, 'rgba(244,234,208,0.28)');
+    moonHalo.addColorStop(1, 'rgba(244,234,208,0)');
+    ctx.fillStyle = moonHalo;
+    ctx.beginPath();
+    ctx.arc(wx + 78, 92, 44, 0, Math.PI * 2);
+    ctx.fill();
     ctx.fillStyle = '#f4ead0';
     ctx.beginPath();
     ctx.arc(wx + 78, 92, 16, 0, Math.PI * 2);
@@ -1720,12 +1845,25 @@ function drawRoom(ctx, s) {
   // below warms the centre, so the chandelier's own light can stand
   // taller against it) — the warm pool is what says "safe hall" next
   // to the red beam's danger.
-  ctx.fillStyle = `rgba(255,217,122,${(0.13 + 0.05 * coneBreath).toFixed(3)})`;
+  // Rev12 (Fxzy: "Spotlight lampu diperhatikan" + "warna harus
+  // menarik"): the chandelier's light is now the room's main source —
+  // a wider, warmer cone with a brighter inner core, and a bigger pool
+  // on the carpet. Two flat fills (outer + core), still cheap; the
+  // blackout overlay covers both, so the dark stays dramatic.
+  ctx.fillStyle = `rgba(255,217,122,${(0.18 + 0.07 * coneBreath).toFixed(3)})`;
   ctx.beginPath();
-  ctx.moveTo(620, 92);
-  ctx.lineTo(700, 92);
-  ctx.lineTo(760, 620);
-  ctx.lineTo(560, 620);
+  ctx.moveTo(600, 92);
+  ctx.lineTo(720, 92);
+  ctx.lineTo(800, 620);
+  ctx.lineTo(520, 620);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = `rgba(255,232,170,${(0.10 + 0.05 * coneBreath).toFixed(3)})`;
+  ctx.beginPath();
+  ctx.moveTo(636, 92);
+  ctx.lineTo(684, 92);
+  ctx.lineTo(730, 620);
+  ctx.lineTo(590, 620);
   ctx.closePath();
   ctx.fill();
   for (const d of CHAND_DUST) {
@@ -1739,10 +1877,15 @@ function drawRoom(ctx, s) {
     ctx.fill();
   }
   // Warm pool of chandelier light on the carpet, pulsing gently with
-  // the same breath as the cone above it.
-  ctx.fillStyle = `rgba(255,205,110,${(0.10 + 0.05 * coneBreath).toFixed(3)})`;
+  // the same breath as the cone above it. Rev12: wider and warmer —
+  // the pool is the room's warm heart next to the red beam's danger.
+  ctx.fillStyle = `rgba(255,205,110,${(0.14 + 0.06 * coneBreath).toFixed(3)})`;
   ctx.beginPath();
-  ctx.ellipse(660, 620, 220, 26, 0, 0, Math.PI * 2);
+  ctx.ellipse(660, 620, 260, 30, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = `rgba(255,232,170,${(0.07 + 0.03 * coneBreath).toFixed(3)})`;
+  ctx.beginPath();
+  ctx.ellipse(660, 620, 150, 18, 0, 0, Math.PI * 2);
   ctx.fill();
 
   // Floor + red carpet runner: baked once at import (FLOOR_STRIP) —
@@ -1981,12 +2124,14 @@ function drawRoom(ctx, s) {
   // the clock, and a small warm glow on the wall around each.
   for (const [sx, sy] of [[640, 290], [1150, 290], [180, 490]]) {
     const flick = 0.8 + 0.2 * Math.sin(s.time * 1.7 + sx * 0.05);
-    const sg = ctx.createRadialGradient(sx, sy - 6, 2, sx, sy - 6, 42);
-    sg.addColorStop(0, `rgba(255,205,110,${(0.14 * flick).toFixed(3)})`);
+    // Rev12: the sconce glow is bigger and warmer — each lamp is a
+    // visible light source, not a wall dot.
+    const sg = ctx.createRadialGradient(sx, sy - 6, 2, sx, sy - 6, 56);
+    sg.addColorStop(0, `rgba(255,205,110,${(0.18 * flick).toFixed(3)})`);
     sg.addColorStop(1, 'rgba(255,205,110,0)');
     ctx.fillStyle = sg;
     ctx.beginPath();
-    ctx.arc(sx, sy - 6, 42, 0, Math.PI * 2);
+    ctx.arc(sx, sy - 6, 56, 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = '#6b5a2e';
     ctx.fillRect(sx - 4, sy - 2, 8, 16);
@@ -2779,6 +2924,81 @@ function formatTime(seconds) {
   return `${m}:${sec.toString().padStart(2, '0')}`;
 }
 
+/**
+ * Rev12 — Mission Tracker: the live objective list, top-left under the
+ * HUD bar, play-only. Phase + the 4 side objectives with real
+ * checkmarks, then HEAT (the run's peak alarm, which never cools)
+ * and the security-network status (NET: CAM LIVE/OFF, live from the
+ * camera + terminal state), then the ghost streak. Every line is live
+ * from state; the panel sits clear of the left window's moon, the
+ * minigame panel and every guard lane.
+ */
+function drawMissionTracker(ctx, s) {
+  if (s.screen !== SCREEN_PLAY) return;
+  const px = 14;
+  const py = 92;
+  const pw = 216;
+  const phaseNames = ['INFILTRATE', 'HACK THE TERMINAL', 'STEAL THE KANCIL', 'ESCAPE'];
+  const phase = s.mission ? s.mission.phase : 0;
+  const side = [
+    { key: 'idol', label: 'JADE IDOL' },
+    { key: 'tiara', label: 'PEARL TIARA' },
+    { key: 'goldbar', label: 'GOLD BAR' },
+    { key: 'vase', label: 'PORCELAIN VASE' },
+  ];
+  const heat = heatLevel(s);
+  const netLive = !(s.camera.offT > 0 || s.terminalHacked);
+  const rows = 4 + 4; // title+phase+4 side+heat+net+ghost = 8 text rows
+  const ph = 170; // content runs to py+162; 8px bottom padding
+  ctx.save();
+  ctx.fillStyle = 'rgba(13,17,32,0.88)';
+  roundRect(ctx, px, py, pw, ph, 8);
+  ctx.fill();
+  ctx.strokeStyle = PALETTE.goldDim;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.textAlign = 'left';
+  let y = py + 16;
+  ctx.fillStyle = PALETTE.gold;
+  ctx.font = `bold 11px ${FONT}`;
+  ctx.fillText('MISSION TRACKER', px + 12, y);
+  ctx.fillStyle = PALETTE.goldBright;
+  ctx.font = `bold 11px ${FONT}`;
+  const phaseText = `PHASE ${phase} · ${phaseNames[phase] || ''}`;
+  ctx.fillText(phaseText, px + 12, y + 16);
+  y += 32;
+  ctx.strokeStyle = 'rgba(232,182,76,0.25)';
+  ctx.beginPath();
+  ctx.moveTo(px + 12, y - 4);
+  ctx.lineTo(px + pw - 12, y - 4);
+  ctx.stroke();
+  ctx.font = `11px ${FONT}`;
+  for (const obj of side) {
+    const done = s.loot[obj.key];
+    ctx.fillStyle = done ? PALETTE.teal : PALETTE.muted;
+    ctx.fillText(done ? '✓' : '○', px + 12, y + 12);
+    ctx.fillStyle = done ? PALETTE.text : PALETTE.muted;
+    ctx.fillText(obj.label, px + 28, y + 12);
+    y += 16;
+  }
+  ctx.strokeStyle = 'rgba(232,182,76,0.25)';
+  ctx.beginPath();
+  ctx.moveTo(px + 12, y - 2);
+  ctx.lineTo(px + pw - 12, y - 2);
+  ctx.stroke();
+  y += 14;
+  ctx.font = `bold 11px ${FONT}`;
+  ctx.fillStyle = heat.color;
+  ctx.fillText(`HEAT ${heat.value}% · ${heat.word}`, px + 12, y);
+  y += 16;
+  ctx.fillStyle = netLive ? PALETTE.teal : '#ff5a68';
+  ctx.fillText(netLive ? 'NET: CAM LIVE' : 'NET: CAM OFF', px + 12, y);
+  y += 16;
+  ctx.fillStyle = s.ghostStreak > 0 ? PALETTE.goldBright : PALETTE.muted;
+  ctx.fillText(`GHOST ×${s.ghostStreak || 0}`, px + 12, y);
+  ctx.restore();
+}
+
 function drawHud(ctx, s) {
   // Top bar.
   ctx.fillStyle = 'rgba(13,17,32,0.88)';
@@ -2885,7 +3105,17 @@ function drawHud(ctx, s) {
   // pill (dot + word + coloured edge), and TIME / COINS / SCORE each
   // carry a small icon (clock, coin, star), so the row reads as a
   // HUD, not a line of text. All values are live from state.
-  const word = detectionWord(s);
+  // Rev12 (cacat rev11 a): on the win/lose screen the pill shows the
+  // run's FINAL status, never the live detection word — the old pill
+  // said SPOTTED above a table that said TIMES SPOTTED 0.
+  let word = detectionWord(s);
+  let pillOverride = null;
+  if (s.screen === SCREEN_WIN) {
+    pillOverride = s.detections === 0 ? { text: 'ESCAPED · CLEAN', color: PALETTE.teal } : { text: 'ESCAPED', color: PALETTE.gold };
+  } else if (s.screen === SCREEN_LOSE) {
+    pillOverride = { text: s.loseReason === 'alarm' ? 'ALARM WON' : 'CAUGHT', color: '#ff5a68' };
+  }
+  if (pillOverride) word = pillOverride.text;
   // Rev4: the SEEN word is gone. In the alert frame it sat next to the
   // "INTRUDER!" bubble, the "Backup!" bubble, the "CHASE!" label and
   // the 68% red alarm bar — four voices saying the same thing, and a
@@ -2895,9 +3125,9 @@ function drawHud(ctx, s) {
   // left (disguise, then the locked-door warning), so the row never
   // collides with the alarm meter.
   let pillLeft = 1252;
-  if (!word.startsWith('SEEN')) {
+  if (pillOverride || !word.startsWith('SEEN')) {
     const spotted = word === 'SPOTTED';
-    const pillColor = spotted ? PALETTE.amber : PALETTE.teal;
+    const pillColor = pillOverride ? pillOverride.color : (spotted ? PALETTE.amber : PALETTE.teal);
     ctx.font = `bold 14px ${FONT}`;
     const wordW = ctx.measureText(word).width;
     const pw = wordW + 36;
@@ -2966,7 +3196,10 @@ function drawHud(ctx, s) {
   // a jump, a landing) a small amber pill flashes at the top-left of
   // the playfield, under the HUD bar. It sits clear of the left window
   // (which starts at x=90).
-  if (s.noise) {
+  // Rev12 — noise indicator: play-only. On the win screen the final
+  // sprint's noise ring is still live, and a NOISE! pill next to the
+  // ESCAPED · CLEAN pill reads as a contradiction.
+  if (s.noise && s.screen === SCREEN_PLAY) {
     const nText = 'NOISE!';
     ctx.font = `bold 12px ${FONT}`;
     const nw = ctx.measureText(nText).width + 26;
@@ -3033,20 +3266,38 @@ function drawHud(ctx, s) {
   ];
   const cardY = FIELD.height - 46;
   const cardH = 42;
-  const cardW = 186;
+  const cardW = 204;
   let tx = 12;
   for (const t of tools) {
+    // Rev12 — Gadget Inventory: the stock count lives on the card
+    // (a gold badge on the icon), affordability counts stock first,
+    // and the last-used gadget gets a bright gold border so the
+    // selected/used gadget is unmistakable at a glance.
+    const stock = s.inventory ? (s.inventory[t.id] ?? 0) : 0;
+    const lastUsed = s.lastGadget === t.id;
     const isFree = s.planning && s.planning.gadget === t.id && !(s.planningUsed && s.planningUsed.gadget);
-    const afford = isFree || s.coins >= t.cost;
+    const afford = isFree || stock > 0 || s.coins >= t.cost;
     ctx.fillStyle = afford ? 'rgba(232,182,76,0.12)' : 'rgba(13,17,32,0.55)';
     roundRect(ctx, tx, cardY, cardW, cardH, 7);
     ctx.fill();
-    ctx.strokeStyle = afford ? PALETTE.gold : '#2c3350';
-    ctx.lineWidth = afford ? 1.5 : 1;
+    ctx.strokeStyle = lastUsed ? PALETTE.goldBright : (afford ? PALETTE.gold : '#2c3350');
+    ctx.lineWidth = lastUsed ? 2.5 : (afford ? 1.5 : 1);
     ctx.stroke();
-    drawIcon(ctx, t.icon, tx + 18, cardY + cardH / 2, 18, afford ? PALETTE.gold : '#5a6076');
+    drawIcon(ctx, t.icon, tx + 18, cardY + cardH / 2, 18, lastUsed ? PALETTE.goldBright : (afford ? PALETTE.gold : '#5a6076'));
+    // Stock badge: a gold-rimmed count on the icon's top-right corner.
+    ctx.fillStyle = 'rgba(13,17,32,0.95)';
+    ctx.beginPath();
+    ctx.arc(tx + 31, cardY + 11, 8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = stock > 0 ? PALETTE.gold : '#5a6076';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = stock > 0 ? PALETTE.goldBright : '#5a6076';
+    ctx.font = `bold 10px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.fillText(`${stock}`, tx + 31, cardY + 14.5);
     ctx.textAlign = 'left';
-    ctx.fillStyle = afford ? PALETTE.text : '#6a7186';
+    ctx.fillStyle = lastUsed ? PALETTE.goldBright : (afford ? PALETTE.text : '#6a7186');
     ctx.font = `bold 12px ${FONT}`;
     ctx.fillText(t.name, tx + 32, cardY + 17);
     const nameW = ctx.measureText(t.name).width;
@@ -3144,6 +3395,8 @@ function drawHud(ctx, s) {
   }
   // Rev11 — the hacking minigame panel, top centre.
   drawMinigamePanel(ctx, s);
+  // Rev12 — the mission tracker panel, top-left, play-only.
+  drawMissionTracker(ctx, s);
 }
 
 /**
@@ -3384,7 +3637,7 @@ function drawTitle(ctx, s) {
     { col: 0, keys: ['SPACE'], text: 'Jump' },
     { col: 0, keys: ['C'], text: 'Crouch behind cover' },
     { col: 1, keys: ['E'], text: 'Interact / hack terminal' },
-    { col: 1, keys: ['1', '2', '3', '4'], text: 'EMP·DECOY·FLASH·LOCKPICK' },
+    { col: 1, keys: ['1', '2', '3', '4'], text: 'EMP·DECOY·FLASH·PICK' },
     { col: 1, keys: ['P', 'R'], text: 'Pause · restart' },
   ];
   ctx.textAlign = 'left';
@@ -3472,15 +3725,34 @@ function drawWin(ctx, s) {
   line(`GRADE ${s.grade}`, FIELD.width / 2, 312, PALETTE.gold);
   drawIcon(ctx, 'star', 432, 280, 22, PALETTE.gold);
   drawIcon(ctx, 'star', 848, 280, 22, PALETTE.gold);
-  // Stats as a clean table: label left, live value right, thin gold
-  // dividers — not a stack of centred lines.
-  const rows = [
+  // Rev12 — Mission Debrief: the old stats table becomes a proper
+  // two-column debrief. Left: the run's numbers (all live). Right:
+  // what happened — heist rank, peak heat, ghost streak, close calls,
+  // and the gadgets actually used, all live from state. Same panel
+  // footprint as the rev11 table (430-850 x 328-474), so the floor,
+  // the open vitrine and the thief at the door stay clear.
+  const gadgetsUsedText = (() => {
+    const used = ['emp', 'decoy', 'flash', 'lockpick']
+      .filter((k) => (s.gadgetsUsed && s.gadgetsUsed[k] > 0))
+      .map((k) => `${k.toUpperCase()} ×${s.gadgetsUsed[k]}`);
+    return used.length ? used.join(' · ') : 'NONE';
+  })();
+  const heat = heatLevel(s);
+  const leftRows = [
     ['TIME', formatTime(s.winTime)],
     ['LOOT', `${s.lootPoints} points`],
     ['COINS', `${s.coins}`],
     ['ALARM', `${Math.floor(s.alarm)}%`],
     ['TIMES SPOTTED', `${s.detections}`],
     ['SCORE', `${s.score}`],
+  ];
+  const rightRows = [
+    ['RANK', (s.heistRank || 'Novice').toUpperCase()],
+    ['HEAT PEAK', `${heat.value}% · ${heat.word}`],
+    ['GHOST STREAK', `×${s.ghostStreak || 0}  (+${s.ghostBonus || 0})`],
+    ['CLOSE CALLS', `${s.closeCalls || 0}  (+${s.closeCallBonus || 0})`],
+    ['GADGETS USED', gadgetsUsedText],
+    ['DETECTIONS', s.detections === 0 ? 'NEVER SEEN' : `${s.detections} × SEEN`],
   ];
   const tx0 = 430;
   const tw = 420;
@@ -3491,25 +3763,39 @@ function drawWin(ctx, s) {
   ctx.strokeStyle = PALETTE.gold;
   ctx.lineWidth = 1.5;
   ctx.stroke();
-  rows.forEach(([label, value], i) => {
-    const ry = ty0 + 24 + i * 22;
-    ctx.textAlign = 'left';
-    ctx.font = `13px ${FONT}`;
-    ctx.fillStyle = PALETTE.muted;
-    ctx.fillText(label, tx0 + 22, ry);
-    ctx.textAlign = 'right';
-    ctx.font = `bold 14px ${FONT}`;
-    ctx.fillStyle = PALETTE.goldBright;
-    ctx.fillText(value, tx0 + tw - 22, ry);
-    if (i < rows.length - 1) {
-      ctx.strokeStyle = 'rgba(232,182,76,0.18)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(tx0 + 22, ry + 8);
-      ctx.lineTo(tx0 + tw - 22, ry + 8);
-      ctx.stroke();
-    }
-  });
+  // Centre divider between the two columns.
+  ctx.strokeStyle = 'rgba(232,182,76,0.3)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(tx0 + tw / 2, ty0 + 10);
+  ctx.lineTo(tx0 + tw / 2, ty0 + 136);
+  ctx.stroke();
+  const drawDebriefCol = (rows, x0, w, valueSize = 13) => {
+    rows.forEach(([label, value], i) => {
+      const ry = ty0 + 24 + i * 22;
+      ctx.textAlign = 'left';
+      ctx.font = `10px ${FONT}`;
+      ctx.fillStyle = PALETTE.muted;
+      ctx.fillText(label, x0 + 12, ry - 2);
+      ctx.textAlign = 'left';
+      ctx.font = `bold ${valueSize}px ${FONT}`;
+      ctx.fillStyle = PALETTE.goldBright;
+      ctx.fillText(value, x0 + 12, ry + 12);
+      if (i < rows.length - 1) {
+        ctx.strokeStyle = 'rgba(232,182,76,0.18)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x0 + 12, ry + 18);
+        ctx.lineTo(x0 + w - 12, ry + 18);
+        ctx.stroke();
+      }
+    });
+  };
+  // Two columns share the 146px height: label above value, 22px a row.
+  // The right column's GADGETS value is the longest ("EMP ×2 · FLASH
+  // ×2" at 11px fits its 198px column); shrink it if it ever runs long.
+  drawDebriefCol(leftRows, tx0, tw / 2);
+  drawDebriefCol(rightRows, tx0 + tw / 2, tw / 2, 11);
   ctx.textAlign = 'center';
   ctx.font = `14px ${FONT}`;
   line('Press R to run it again — faster, quieter, richer.', FIELD.width / 2, 494, PALETTE.muted);
@@ -3533,20 +3819,57 @@ function drawLose(ctx, s) {
   ctx.fillStyle = PALETTE.muted;
   ctx.font = `16px ${FONT}`;
   ctx.fillText(`Survived ${formatTime(s.time)}  ·  Alarm ${Math.floor(s.alarm)}%  ·  Coins ${s.coins}`, FIELD.width / 2, 348);
+  // Rev12 — lose debrief: the same debrief language as the win screen,
+  // short and consistent — what was taken, how many times spotted,
+  // peak heat and rank, so a loss still reads as a run report.
+  const heat = heatLevel(s);
+  const lootTaken = ['idol', 'tiara', 'goldbar', 'vase'].filter((k) => s.loot[k]).length
+    + (s.loot.kancil ? 1 : 0);
+  const loseRows = [
+    ['TIME', formatTime(s.time)],
+    ['LOOT TAKEN', `${lootTaken} / 5`],
+    ['TIMES SPOTTED', `${s.detections}`],
+    ['HEAT PEAK', `${heat.value}% · ${heat.word}`],
+    ['RANK', (s.heistRank || 'Novice').toUpperCase()],
+  ];
+  const ltx0 = 430;
+  const ltw = 420;
+  const lty0 = 368;
+  ctx.fillStyle = 'rgba(13,17,32,0.85)';
+  roundRect(ctx, ltx0, lty0, ltw, 110, 10);
+  ctx.fill();
+  ctx.strokeStyle = '#8f1420';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  loseRows.forEach(([label, value], i) => {
+    const ry = lty0 + 20 + i * 18;
+    ctx.textAlign = 'left';
+    ctx.font = `12px ${FONT}`;
+    ctx.fillStyle = PALETTE.muted;
+    ctx.fillText(label, ltx0 + 22, ry);
+    ctx.textAlign = 'right';
+    ctx.font = `bold 13px ${FONT}`;
+    ctx.fillStyle = PALETTE.goldBright;
+    ctx.fillText(value, ltx0 + ltw - 22, ry);
+  });
+  ctx.textAlign = 'center';
   ctx.fillStyle = PALETTE.gold;
   ctx.font = `bold 16px ${FONT}`;
-  ctx.fillText('Press R to try again — watch the cones, mind the red laser.', FIELD.width / 2, 396);
+  ctx.fillText('Press R to try again — watch the cones, mind the red laser.', FIELD.width / 2, 510);
 }
 
 export function render(ctx, s) {
   ctx.clearRect(0, 0, FIELD.width, FIELD.height);
   drawRoom(ctx, s);
+  drawShadowZones(ctx, s);
+  drawGuardLightPools(ctx, s);
   drawAmbient(ctx, s);
   drawCoins(ctx, s);
   drawBodies(ctx, s);
   drawCameraUnit(ctx, s);
   for (const g of s.guards) drawCone(ctx, g);
   drawLaser(ctx, s);
+  drawLastKnownMarkers(ctx, s);
   drawNoiseRing(ctx, s);
   for (const g of s.guards) drawGuard(ctx, s, g);
   if (s.decoy) drawDecoy(ctx, s);

@@ -21,8 +21,9 @@
 // Math.random, no Date.now in the simulation.
 import {
   ALARM, ALARM_TIERS, CAMERA, COINS, COVER, CUTOFF_X, EXTRA_LOOT, FIELD,
-  GUARD, HIDE_SPOTS, LOCKER, LOOT, MINIGAME, PLATFORMS, PLAYER, SCORE,
-  SERVICE_DOOR, SWITCHES, TERMINAL, TOOLS, VITRINES,
+  GUARD, HIDE_SPOTS, INVENTORY_START, LOCKER, LOOT, MINIGAME, PLATFORMS,
+  PLAYER, SCORE, SERVICE_DOOR, SHADOW_ZONES, SWITCHES, TERMINAL, TOOLS,
+  VITRINES,
 } from './config.js';
 import { mulberry32 } from './random.js';
 import { insideCone, laserHit } from './vision.js';
@@ -108,6 +109,16 @@ export function newWorld(seed = 1) {
     lights: { ground: true, upper: true },
     lockerUsed: false,
     heistRank: 'Novice',
+    // --- Rev12 state. ---
+    shadow: { inShadow: false },
+    heatPeak: 0,
+    inventory: { ...INVENTORY_START },
+    gadgetsUsed: { emp: 0, decoy: 0, flash: 0, lockpick: 0 },
+    lastGadget: null,
+    ghostStreak: 0,
+    ghostBonus: 0,
+    closeCalls: 0,
+    closeCallBonus: 0,
   };
 }
 
@@ -147,6 +158,15 @@ function effectiveConeRange(s, g) {
   if (s.alarmTier === 2) range *= 1.15; // tier 2: +15% range
   if (!s.lights[guardFloor(g)]) range *= 0.7; // dark floor: -30%
   if (s.env.dimT > 0) range *= 0.75; // dimming event: -25%
+  // Rev12 shadow: a still or crouched thief in shadow is hard to see
+  // (-15% cone); a SPRINTING thief gets NO concealment at all — he is
+  // loud and moving, and the shadow does not hide him. (A flat -15%
+  // for runners starved the alert scene's chase: suspicion filled so
+  // slowly the guard was already adjacent when it maxed, and the
+  // staged catch flipped chase -> search before the freeze.)
+  if (s.shadow && s.shadow.inShadow && (s.player.crouch || Math.abs(s.player.vx) < 50)) {
+    range *= 0.85;
+  }
   return range;
 }
 
@@ -161,6 +181,11 @@ function suspicionMultiplier(s, g, dist) {
   if (!s.lights[guardFloor(g)]) m *= 0.7; // dark floor: -30%
   if (s.env.dimT > 0) m *= 0.5; // dimming event: -50%
   if (s.env.flicker < 0.35) m *= 0.5; // chandelier flicker dip: -50%
+  // Rev12 shadow: -55% suspicion for a still/crouched thief, NO
+  // concealment for a sprinting one (see effectiveConeRange above).
+  if (s.shadow && s.shadow.inShadow && (s.player.crouch || Math.abs(s.player.vx) < 50)) {
+    m *= 0.45;
+  }
   return m;
 }
 
@@ -205,6 +230,35 @@ function updateMission(s) {
     phase = 1; // 1 Hack done -> Steal
   }
   s.mission.phase = phase;
+  // Rev12 — ghost streak: loot taken while never detected. It freezes
+  // the moment a detection happens (the streak is a clean-run record).
+  if (s.detections === 0) {
+    s.ghostStreak = side + (s.loot.kancil ? 1 : 0);
+  }
+}
+
+/** Rev12 — is the thief standing in a shadow zone right now? Fixed
+ *  seeded rectangles from config; the renderer draws them, the
+ *  suspicion/cone math reads this flag. */
+function updateShadow(s) {
+  const p = s.player;
+  const cx = p.x + p.width / 2;
+  const cy = p.y + p.height / 2;
+  s.shadow.inShadow = SHADOW_ZONES.some(
+    (z) => cx >= z.x && cx <= z.x + z.w && cy >= z.y && cy <= z.y + z.h,
+  );
+}
+
+/** Rev12 — heat level from the run's peak alarm. Heat never cools:
+ *  once a tier is reached it stays, even if the alarm itself drops
+ *  (hack relief, chase ending). Returns 0-100 and the word. */
+export function heatLevel(s) {
+  const peak = s.heatPeak || 0;
+  return {
+    value: Math.floor(peak),
+    word: peak >= 70 ? 'HOT' : peak >= 35 ? 'WARM' : 'CALM',
+    color: peak >= 70 ? '#ff2e3e' : peak >= 35 ? '#ffb020' : '#2ec4b6',
+  };
 }
 
 /** Heist rank from total loot taken (side loot + Kancil): 0-1 Novice,
@@ -299,6 +353,12 @@ function updateGuard(s, g, dt) {
   if (sees) {
     const closeness = 1.6 - Math.min(1, dist / g.coneRange);
     g.suspicion = Math.min(100, g.suspicion + GUARD.suspicionRate * closeness * suspicionMultiplier(s, g, dist) * dt);
+    // Rev12 — Last Known Position: the guard remembers exactly where
+    // the thief was last seen. lastSeenSet stays true while the guard
+    // is still hunting that spot (suspect/search); it clears when the
+    // guard gives up and returns to patrol.
+    g.lastSeenSet = true;
+    g.suspicionPeak = Math.max(g.suspicionPeak || 0, g.suspicion);
     // Disguise: no chase can START unless the guard is close enough to
     // inspect (under 80px) — suspicion is capped at 99 beyond that.
     if (s.disguise.active && dist >= 80) g.suspicion = Math.min(g.suspicion, 99);
@@ -341,6 +401,15 @@ function updateGuard(s, g, dt) {
   } else {
     g.suspicion = Math.max(0, g.suspicion - GUARD.suspicionDecay * dt);
     if (g.state === 'suspect' && g.suspicion < 10) {
+      // Rev12 — close call: the guard grew suspicious (suspicion had
+      // crossed 45 to enter suspect) and lost the thief without a
+      // chase. A real near-miss moment, counted live for the debrief.
+      if (g.suspicionPeak > 45) {
+        s.closeCalls += 1;
+        addFloater(s, g.x + g.width / 2, g.y - 24, 'CLOSE CALL!', '#ffd97a');
+      }
+      g.suspicionPeak = 0;
+      g.lastSeenSet = false;
       g.state = 'patrol';
       g.cutoff = false;
       setBark(g, 'Must have been the wind.');
@@ -457,6 +526,7 @@ function updateGuard(s, g, dt) {
     moveTo(g.lastSeenX, GUARD.patrolSpeed * 1.3 * patrolMult);
     if (g.searchT <= 0) {
       g.state = 'return';
+      g.lastSeenSet = false;
       setBark(g, 'Nothing here. Back to the rounds.');
     }
   } else if (g.state === 'return') {
@@ -746,27 +816,37 @@ function updateMinigame(s, input, dt) {
 
 function useTool(s, tool) {
   const p = s.player;
-  // Pre-heist planning: the chosen gadget is free ONCE, no coins spent.
-  const free = s.planning.gadget === tool && !s.planningUsed.gadget;
-  const pay = (cost) => {
-    if (free) { s.planningUsed.gadget = true; return true; }
-    if (s.coins < cost) return false;
-    s.coins -= cost;
+  // Rev12 — Gadget Inventory: every use spends one stock. With no
+  // stock left the thief auto-buys one with coins at the TOOLS price
+  // (the old pay-per-use economy, unchanged); broke or out of stock
+  // and out of coins, the gadget does not fire. The first use of the
+  // planning gadget marks the planning grant as used.
+  const spend = (cost) => {
+    if (s.inventory[tool] > 0) {
+      s.inventory[tool] -= 1;
+    } else if (s.coins >= cost) {
+      s.coins -= cost;
+    } else {
+      return false;
+    }
+    s.gadgetsUsed[tool] += 1;
+    s.lastGadget = tool;
+    if (s.planning.gadget === tool && !s.planningUsed.gadget) s.planningUsed.gadget = true;
     return true;
   };
-  if (tool === 'emp' && pay(TOOLS.emp.cost)) {
+  if (tool === 'emp' && spend(TOOLS.emp.cost)) {
     s.camera.offT = CAMERA.empOffSeconds;
     s.gridOffT = CAMERA.empOffSeconds;
     s.blackoutT = 3;
     addFloater(s, p.x + 20, p.y - 20, 'EMP! THE BLACKOUT', '#2ec4b6');
     return true;
   }
-  if (tool === 'decoy' && pay(TOOLS.decoy.cost)) {
+  if (tool === 'decoy' && spend(TOOLS.decoy.cost)) {
     s.decoy = { x: Math.max(40, Math.min(FIELD.width - 40, p.x + p.facing * 150)), y: 620, t: 4 };
     addFloater(s, s.decoy.x, 580, 'DECOY — CLATTER!', '#ffd97a');
     return true;
   }
-  if (tool === 'flash' && pay(TOOLS.flash.cost)) {
+  if (tool === 'flash' && spend(TOOLS.flash.cost)) {
     s.flashT = 3;
     for (const g of s.guards) g.suspicion = Math.max(0, g.suspicion - 60);
     addFloater(s, p.x + 20, p.y - 20, 'FLASHBANG!', '#ffffff');
@@ -774,12 +854,12 @@ function useTool(s, tool) {
     return true;
   }
   if (tool === 'lockpick') {
-    // Lockpick only fires on a real target — never spends coins (or
-    // the free planning use) on nothing.
+    // Lockpick only fires on a real target — never spends stock or
+    // coins on nothing.
     const target = nearInteractable(s);
     const nearDoor = p.x + p.width > SERVICE_DOOR.x - 60 && p.y + p.height > 500;
     if (target && (target.kind === 'idol' || target.kind === 'tiara')) {
-      if (!pay(TOOLS.lockpick.cost)) return false;
+      if (!spend(TOOLS.lockpick.cost)) return false;
       s.glass[target.kind === 'idol' ? 'left' : 'right'] = 'open';
       s.loot[target.kind] = true;
       s.coins += target.kind === 'idol' ? LOOT.idolValue : LOOT.tiaraValue;
@@ -788,7 +868,7 @@ function useTool(s, tool) {
       return true;
     }
     if (s.escape.doorLocked && nearDoor) {
-      if (!pay(TOOLS.lockpick.cost)) return false;
+      if (!spend(TOOLS.lockpick.cost)) return false;
       s.escape.unlockedByLockpick = true;
       addFloater(s, SERVICE_DOOR.x + 32, 470, 'DOOR UNLOCKED', '#2ec4b6');
       return true;
@@ -807,13 +887,18 @@ function computeScore(s) {
   const timeBonus = Math.round(Math.max(0, SCORE.timeBonusCapSeconds - s.winTime) * SCORE.timeBonusPerSecond);
   const undetected = s.alarm < SCORE.undetectedAlarmMax ? SCORE.undetectedBonus : 0;
   const rankBonus = SCORE.rankBonus[s.heistRank] || 0;
-  const score = Math.round(SCORE.base + lootPoints * SCORE.perCoin + timeBonus + undetected + rankBonus);
+  // Rev12 — ghost bonus (clean-run loot streak) and close-call bonus
+  // (near-misses survived). Both are zero on a detected run, so a
+  // spotted thief can never out-score a ghost.
+  const ghostBonus = s.detections === 0 ? s.ghostStreak * SCORE.ghostBonusPerLoot : 0;
+  const closeCallBonus = s.detections === 0 ? s.closeCalls * SCORE.closeCallBonus : 0;
+  const score = Math.round(SCORE.base + lootPoints * SCORE.perCoin + timeBonus + undetected + rankBonus + ghostBonus + closeCallBonus);
   // Grade S is the ghost grade: it needs the score AND zero detections.
   // A run that was spotted (a chase or a camera lock-on) caps at A, so
   // the win screen can never print "GRADE S" above "TIMES SPOTTED 1".
   let grade = score >= SCORE.gradeS ? 'S' : score >= SCORE.gradeA ? 'A' : score >= SCORE.gradeB ? 'B' : 'C';
   if (grade === 'S' && s.detections > 0) grade = 'A';
-  return { score, grade, lootPoints, timeBonus, undetected, rankBonus };
+  return { score, grade, lootPoints, timeBonus, undetected, rankBonus, ghostBonus, closeCallBonus };
 }
 
 function winGame(s) {
@@ -823,6 +908,8 @@ function winGame(s) {
   s.score = result.score;
   s.grade = result.grade;
   s.lootPoints = result.lootPoints;
+  s.ghostBonus = result.ghostBonus;
+  s.closeCallBonus = result.closeCallBonus;
 }
 
 function loseGame(s, reason) {
@@ -841,6 +928,9 @@ export function startGame(s, planning) {
     const gadget = ['emp', 'decoy', 'flash', 'lockpick'].includes(planning.gadget) ? planning.gadget : null;
     const entry = ['door', 'vent', 'upper'].includes(planning.entry) ? planning.entry : null;
     s.planning = { gadget, entry };
+    // Rev12 — the planning gadget is +1 inventory stock (the free
+    // gadget), on top of the starting kit.
+    if (gadget) s.inventory[gadget] += 1;
     if (entry === 'vent') {
       s.player.x = 700;
       s.player.y = 168 - PLAYER.height;
@@ -874,6 +964,10 @@ export function update(s, input, dt) {
   // Dynamic environment (dimming schedule + flicker), then the live
   // alarm tier and the escape state it drives.
   updateEnv(s);
+  updateShadow(s);
+  // Rev12 — heat is the run's peak alarm: it only ever rises, even
+  // when the alarm itself drops (hack relief, chase ending).
+  s.heatPeak = Math.max(s.heatPeak, s.alarm);
   s.alarmTier = s.alarm < ALARM_TIERS.tier1At ? 0 : s.alarm < ALARM_TIERS.tier2At ? 1 : 2;
   s.escape.doorLocked = s.alarmTier === 2 && !s.escape.unlockedByLockpick;
   s.escape.route = s.escape.doorLocked ? 'roof' : 'door';
@@ -1019,6 +1113,7 @@ export function update(s, input, dt) {
 
   // The alarm may have moved this frame (camera lock-on, body found):
   // refresh the tier + escape state so the win check below is current.
+  s.heatPeak = Math.max(s.heatPeak, s.alarm);
   s.alarmTier = s.alarm < ALARM_TIERS.tier1At ? 0 : s.alarm < ALARM_TIERS.tier2At ? 1 : 2;
   s.escape.doorLocked = s.alarmTier === 2 && !s.escape.unlockedByLockpick;
   s.escape.route = s.escape.doorLocked ? 'roof' : 'door';

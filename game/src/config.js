@@ -111,7 +111,28 @@ export const SCORE = {
   gradeB: 3000,
   /** Bonus for the run's heist rank (see world.js computeScore). */
   rankBonus: { Novice: 0, Shadow: 250, 'Master Thief': 600 },
+  /** Rev12 — Ghost streak: per loot item taken while never detected. */
+  ghostBonusPerLoot: 150,
+  /** Rev12 — Close call: a guard grew suspicious and lost you. */
+  closeCallBonus: 100,
 };
+
+/** Rev12 — starting gadget stock. Using a gadget spends one stock;
+ *  with no stock left the thief auto-buys one with coins at the
+ *  TOOLS price (the old pay-per-use economy, unchanged). Pre-heist
+ *  planning adds +1 stock of the chosen gadget. */
+export const INVENTORY_START = { emp: 1, decoy: 1, flash: 2, lockpick: 1 };
+
+/** Rev12 — shadow zones: fixed, seeded rectangles where the thief is
+ *  hard to see (suspicion fills 55% slower, cones reach 15% shorter).
+ *  Two on the ground floor, two upstairs, each tucked behind cover so
+ *  a crouched thief there reads as "hiding in the dark". */
+export const SHADOW_ZONES = [
+  { x: 296, y: 556, w: 120, h: 64, floor: 'ground' },
+  { x: 500, y: 556, w: 90, h: 64, floor: 'ground' },
+  { x: 470, y: 372, w: 90, h: 68, floor: 'upper' },
+  { x: 1028, y: 372, w: 48, h: 68, floor: 'upper' },
+];
 
 /** Alarm tiers: 0 below 35%, 1 at 35-69%, 2 at 70% and up. */
 export const ALARM_TIERS = { tier1At: 35, tier2At: 70 };
