@@ -280,13 +280,22 @@ export function buildShot(name) {
     // Walk in, grab the first coin, then crouch behind the floor crate
     // while the guard's amber cone sweeps past, cut short by the crate.
     // Alarm here is only the slow creep: ~24s of play, so ~12%.
+    // Rev3: the freeze no longer happens behind the crate — there the
+    // thief was squeezed between the left vitrine and the crate and
+    // read as half-hidden. After the wait he steps out into the open
+    // gap between the crate (ends 492) and the centre vitrine (starts
+    // 600) and crouches whole in it: thief fully visible, Kancil Emas
+    // beside him, the floor guard's amber cone sweeping just past him
+    // to the right. The step-out lands while the guard is at the far
+    // end of his patrol facing away, so the frame stays HIDDEN.
     const plan = [
       { x: 250 },
       { x: 410 },
       { x: 410, action: 'wait', seconds: 21 },
+      { x: 545 },
     ];
     stepWorld(state, plan, 40 / STEP);
-    // Freeze crouched behind the crate (the last step stands the thief
+    // Freeze crouched in the open gap (the last step stands the thief
     // back up as the plan empties; the staged pose is the crouch).
     state.player.crouch = true;
     state.player.height = 36;

@@ -7,12 +7,47 @@ import {
   TERMINAL, VITRINES, FONT, FONT_DISPLAY,
 } from './config.js';
 import { coneRayHit, laserHit } from './vision.js';
+import { mulberry32 } from './random.js';
 import {
   SCREEN_LOSE, SCREEN_PLAY, SCREEN_TITLE, SCREEN_WIN,
   detectionWord, objectiveLine,
 } from './world.js';
 
 const GRID_BEAMS = [596, 660, 724];
+
+// Seeded ambient life: dust motes that drift on fixed paths, a
+// chandelier that breathes, a glint on the gold. Positions come from
+// mulberry32 once at load; motion is a pure function of s.time, so a
+// staged frame at a frozen time is byte-stable and live play stays
+// smooth. No Math.random anywhere — the shots must reproduce exactly.
+const AMBIENT_RNG = mulberry32(20261122);
+const MOTES = [];
+for (let i = 0; i < 42; i += 1) {
+  MOTES.push({
+    x: 40 + AMBIENT_RNG() * 1200,
+    y: 70 + AMBIENT_RNG() * 520,
+    r: 0.8 + AMBIENT_RNG() * 1.6,
+    phase: AMBIENT_RNG() * Math.PI * 2,
+    speed: 0.25 + AMBIENT_RNG() * 0.5,
+    drift: 6 + AMBIENT_RNG() * 18,
+    alpha: 0.10 + AMBIENT_RNG() * 0.18,
+  });
+}
+
+function drawAmbient(ctx, s) {
+  // Dust motes drifting through the moonlight and chandelier glow.
+  // Kept faint and small: they must never compete with the thief, a
+  // cone, the laser, the Kancil or the alarm meter.
+  for (const m of MOTES) {
+    const x = m.x + Math.sin(s.time * m.speed + m.phase) * m.drift;
+    const y = m.y + Math.cos(s.time * m.speed * 0.7 + m.phase) * m.drift * 0.5;
+    const twinkle = 0.7 + 0.3 * Math.sin(s.time * 0.9 + m.phase);
+    ctx.fillStyle = `rgba(255,240,200,${(m.alpha * twinkle).toFixed(3)})`;
+    ctx.beginPath();
+    ctx.arc(x, y, m.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
 
 function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
@@ -175,10 +210,17 @@ function drawGuard(ctx, s, g) {
   ctx.beginPath();
   ctx.arc(x + w * 0.5 + g.facing * 14, y + h * 0.55 + bob, 3.5, 0, Math.PI * 2);
   ctx.fill();
-  // State label, live from the guard's own state.
+  // State label, live from the guard's own state. It sits on a small
+  // dark pill: a bare label over the vitrine glass (where a chasing
+  // guard stands) washes out against the glass and reads as clutter
+  // on the loot; the pill keeps it readable over glass, cone or floor.
   const label = { patrol: 'PATROL', suspect: 'SUSPICIOUS', investigate: 'INVESTIGATING', chase: 'CHASE!', search: 'SEARCHING', return: 'RETURNING' }[g.state] || 'PATROL';
   ctx.font = `bold 11px ${FONT}`;
   ctx.textAlign = 'center';
+  const lw = ctx.measureText(label).width + 12;
+  ctx.fillStyle = 'rgba(13,17,32,0.78)';
+  roundRect(ctx, x + w / 2 - lw / 2, y - 20, lw, 15, 7);
+  ctx.fill();
   ctx.fillStyle = g.state === 'chase' ? '#ff5a68' : 'rgba(242,234,216,0.85)';
   ctx.fillText(label, x + w / 2, y - 8);
   ctx.restore();
@@ -190,6 +232,10 @@ function drawGuard(ctx, s, g) {
  * the thief stands close to the guard, and the text gets cut ("INTRUDER!
  * Stop right ther…"). On top, with clearance above the guard's head,
  * the whole line reads at 1280x720 and at 768x480.
+ * Rev3: a bubble must also stay clear of every vitrine (frame + label
+ * plate). A guard chasing beside the centre vitrine used to park his
+ * bubble over the glass and hide the Kancil; if the bubble would
+ * overlap a vitrine it is lifted above that vitrine's top edge instead.
  */
 function drawBarks(ctx, s) {
   ctx.save();
@@ -201,7 +247,16 @@ function drawBarks(ctx, s) {
     ctx.font = `12px ${FONT}`;
     const tw = ctx.measureText(g.bark).width + 18;
     const bx = Math.max(6, Math.min(FIELD.width - tw - 6, x + w / 2 - tw / 2));
-    const by = Math.max(60, y - 46);
+    let by = Math.max(60, y - 46);
+    for (const v of Object.values(VITRINES)) {
+      const vx0 = v.x - 8;
+      const vy0 = v.y - 10;
+      const vx1 = v.x + v.w + 8;
+      const vy1 = v.y + v.h + 34;
+      if (bx < vx1 && bx + tw > vx0 && by < vy1 && by + 20 > vy0) {
+        by = Math.max(60, vy0 - 26);
+      }
+    }
     ctx.fillStyle = 'rgba(16,20,42,0.92)';
     ctx.strokeStyle = '#3a4470';
     ctx.lineWidth = 1;
@@ -267,6 +322,22 @@ function drawVitrine(ctx, s, key, v) {
   // The loot inside.
   if (key === 'centre' && !s.loot.kancil) {
     drawKancil(ctx, v.x + v.w / 2, v.y + v.h - 34, 1.15, s.time);
+    // A slow glint on the gold, seeded by the clock alone: a little
+    // star that breathes over the Kancil's antlers and says "loot".
+    const glint = 0.35 + 0.35 * Math.sin(s.time * 2.4);
+    const gx = v.x + v.w * 0.78;
+    const gy = v.y + 26;
+    ctx.save();
+    ctx.globalAlpha = glint;
+    ctx.strokeStyle = '#fff3c4';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(gx - 7, gy);
+    ctx.lineTo(gx + 7, gy);
+    ctx.moveTo(gx, gy - 7);
+    ctx.lineTo(gx, gy + 7);
+    ctx.stroke();
+    ctx.restore();
   } else if (key === 'left' && !s.loot.idol) {
     ctx.fillStyle = '#3fae7a';
     ctx.beginPath();
@@ -398,7 +469,9 @@ function drawRoom(ctx, s) {
     ctx.textAlign = 'center';
     ctx.fillText(pg.label, pg.x + pg.w / 2, 196);
   }
-  // Chandelier over the centre vitrine.
+  // Chandelier over the centre vitrine. The bulbs breathe: a slow
+  // flicker (pure function of s.time) so the hall feels lit, not flat.
+  const flicker = 0.82 + 0.18 * Math.sin(s.time * 1.7 + 0.6);
   ctx.strokeStyle = PALETTE.goldDim;
   ctx.lineWidth = 2;
   ctx.beginPath();
@@ -407,11 +480,17 @@ function drawRoom(ctx, s) {
   ctx.stroke();
   ctx.fillStyle = PALETTE.gold;
   for (let i = -1; i <= 1; i += 1) {
+    ctx.globalAlpha = flicker;
     ctx.beginPath();
     ctx.arc(660 + i * 26, 84, 6, 0, Math.PI * 2);
     ctx.fill();
+    ctx.globalAlpha = flicker * 0.35;
+    ctx.beginPath();
+    ctx.arc(660 + i * 26, 84, 11, 0, Math.PI * 2);
+    ctx.fill();
   }
-  ctx.fillStyle = 'rgba(255,217,122,0.14)';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = `rgba(255,217,122,${(0.11 + 0.04 * Math.sin(s.time * 1.7)).toFixed(3)})`;
   ctx.beginPath();
   ctx.moveTo(620, 92);
   ctx.lineTo(700, 92);
@@ -817,25 +896,33 @@ function drawTitle(ctx, s) {
 }
 
 function drawWin(ctx, s) {
-  ctx.fillStyle = 'rgba(10,13,26,0.72)';
+  // Rev3: a light veil, not a blackout. In rev2 the 0.72 overlay buried
+  // the open vitrine, the spilled gold and the thief at the service
+  // door behind the win text. At 0.38 the gallery still reads; the
+  // text stays readable because every line carries its own dark
+  // shadow. The block is also kept high, so the floor — vitrine, gold,
+  // thief at the door — is clear of text entirely.
+  ctx.fillStyle = 'rgba(10,13,26,0.38)';
   ctx.fillRect(0, 0, FIELD.width, FIELD.height);
   ctx.textAlign = 'center';
-  ctx.fillStyle = PALETTE.goldBright;
+  const line = (text, x, y, color) => {
+    ctx.fillStyle = 'rgba(8,10,22,0.9)';
+    ctx.fillText(text, x + 2, y + 2);
+    ctx.fillStyle = color;
+    ctx.fillText(text, x, y);
+  };
   ctx.font = `bold 58px ${FONT_DISPLAY}`;
-  ctx.fillText('CLEAN GETAWAY!', FIELD.width / 2, 210);
-  ctx.fillStyle = PALETTE.text;
+  line('CLEAN GETAWAY!', FIELD.width / 2, 150, PALETTE.goldBright);
   ctx.font = `22px ${FONT}`;
-  ctx.fillText(
+  line(
     s.detections === 0
       ? 'The Kancil Emas is yours. The gallery never saw a thing.'
       : 'The Kancil Emas is yours — spotted, but never caught.',
-    FIELD.width / 2, 252,
+    FIELD.width / 2, 188, PALETTE.text,
   );
   // Grade, big.
-  ctx.fillStyle = PALETTE.gold;
-  ctx.font = `bold 110px ${FONT_DISPLAY}`;
-  ctx.fillText(`GRADE ${s.grade}`, FIELD.width / 2, 380);
-  ctx.fillStyle = PALETTE.text;
+  ctx.font = `bold 100px ${FONT_DISPLAY}`;
+  line(`GRADE ${s.grade}`, FIELD.width / 2, 312, PALETTE.gold);
   ctx.font = `17px ${FONT}`;
   const rows = [
     `TIME  ${formatTime(s.winTime)}`,
@@ -843,10 +930,9 @@ function drawWin(ctx, s) {
     `TIMES SPOTTED  ${s.detections}`,
     `SCORE  ${s.score}`,
   ];
-  rows.forEach((row, i) => ctx.fillText(row, FIELD.width / 2, 430 + i * 30));
-  ctx.fillStyle = PALETTE.muted;
+  rows.forEach((row, i) => line(row, FIELD.width / 2, 356 + i * 28, PALETTE.text));
   ctx.font = `14px ${FONT}`;
-  ctx.fillText('Press R to run it again — faster, quieter, richer.', FIELD.width / 2, 580);
+  line('Press R to run it again — faster, quieter, richer.', FIELD.width / 2, 484, PALETTE.muted);
 }
 
 function drawLose(ctx, s) {
@@ -875,6 +961,7 @@ function drawLose(ctx, s) {
 export function render(ctx, s) {
   ctx.clearRect(0, 0, FIELD.width, FIELD.height);
   drawRoom(ctx, s);
+  drawAmbient(ctx, s);
   drawCoins(ctx, s);
   drawCameraUnit(ctx, s);
   for (const g of s.guards) drawCone(ctx, g);
