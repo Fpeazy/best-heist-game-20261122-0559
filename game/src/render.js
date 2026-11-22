@@ -263,6 +263,125 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
+// Rev9 (Fxzy: "UI di perbagus lagi") — shared UI primitives so the top
+// bar, bottom bar, prompt pill, title and win screens speak one design
+// language: gold/teal/navy, rounded panels, kbd chips, small vector
+// icons. All drawing is pure canvas paths — no images, no network —
+// and every value shown still comes from live state.
+
+/** Width of a kbd chip for `label` at height `h`. */
+function kbdChipWidth(ctx, label, h = 18) {
+  ctx.save();
+  ctx.font = `bold ${Math.round(h * 0.62)}px ${FONT}`;
+  const w = ctx.measureText(label).width + 12;
+  ctx.restore();
+  return w;
+}
+
+/** A small keyboard chip: dark keycap, gold edge, bright label. */
+function drawKbdChip(ctx, x, y, label, h = 18, dim = false) {
+  ctx.save();
+  const w = kbdChipWidth(ctx, label, h);
+  ctx.fillStyle = dim ? 'rgba(13,17,32,0.7)' : 'rgba(13,17,32,0.92)';
+  roundRect(ctx, x, y, w, h, 4);
+  ctx.fill();
+  ctx.strokeStyle = dim ? '#4a5168' : PALETTE.gold;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = dim ? '#8a90a5' : PALETTE.goldBright;
+  ctx.font = `bold ${Math.round(h * 0.62)}px ${FONT}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, x + w / 2, y + h / 2 + 0.5);
+  ctx.restore();
+  return w;
+}
+
+/** Five-point star path centred at (cx, cy). */
+function starPath(ctx, cx, cy, rOuter, rInner, points = 5) {
+  ctx.beginPath();
+  for (let i = 0; i < points * 2; i += 1) {
+    const r = i % 2 === 0 ? rOuter : rInner;
+    const a = -Math.PI / 2 + (i * Math.PI) / points;
+    const px = cx + Math.cos(a) * r;
+    const py = cy + Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+}
+
+/**
+ * Small vector icons, drawn in one colour: clock, coin, star, bolt
+ * (EMP), bell (DECOY — the clatter lure), burst (FLASH). `size` is the
+ * icon's diameter in px.
+ */
+function drawIcon(ctx, kind, cx, cy, size, color) {
+  ctx.save();
+  ctx.fillStyle = color;
+  ctx.strokeStyle = color;
+  const s = size / 2;
+  if (kind === 'clock') {
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, s, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx, cy - s * 0.6);
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + s * 0.45, cy);
+    ctx.stroke();
+  } else if (kind === 'coin') {
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(cx, cy, s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = PALETTE.goldDim;
+    ctx.stroke();
+    ctx.fillStyle = '#1d2a1a';
+    ctx.font = `bold ${Math.round(size * 0.62)}px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('$', cx, cy + 0.5);
+  } else if (kind === 'star') {
+    starPath(ctx, cx, cy, s, s * 0.45);
+    ctx.fill();
+  } else if (kind === 'bolt') {
+    ctx.beginPath();
+    ctx.moveTo(cx + s * 0.25, cy - s);
+    ctx.lineTo(cx - s * 0.65, cy + s * 0.1);
+    ctx.lineTo(cx - s * 0.05, cy + s * 0.1);
+    ctx.lineTo(cx - s * 0.25, cy + s);
+    ctx.lineTo(cx + s * 0.65, cy - s * 0.1);
+    ctx.lineTo(cx + s * 0.05, cy - s * 0.1);
+    ctx.closePath();
+    ctx.fill();
+  } else if (kind === 'bell') {
+    // Dome + rim + clapper, with two sound arcs: the decoy's clatter.
+    ctx.beginPath();
+    ctx.arc(cx, cy - s * 0.15, s * 0.62, Math.PI, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillRect(cx - s * 0.72, cy + s * 0.42, s * 1.44, s * 0.18);
+    ctx.beginPath();
+    ctx.arc(cx, cy + s * 0.78, s * 0.14, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.arc(cx, cy, s * 1.05, -Math.PI * 0.32, -Math.PI * 0.05);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(cx, cy, s * 1.05, Math.PI * 0.05, Math.PI * 0.32);
+    ctx.stroke();
+  } else if (kind === 'burst') {
+    starPath(ctx, cx, cy, s, s * 0.28, 8);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
 function drawCone(ctx, guard) {
   const eyeX = guard.x + guard.width / 2;
   const eyeY = guard.y + 14;
@@ -584,14 +703,27 @@ function drawGuard(ctx, s, g) {
   // guard stands) washes out against the glass and reads as clutter
   // on the loot; the pill keeps it readable over glass, cone or floor.
   const label = { patrol: 'PATROL', suspect: 'SUSPICIOUS', investigate: 'INVESTIGATING', chase: 'CHASE!', search: 'SEARCHING', return: 'RETURNING' }[g.state] || 'PATROL';
+  // Rev9: the label is a designed pill — a state-coloured dot and edge
+  // (teal patrol, amber suspicious, red chase) instead of bare text on
+  // a dark box, so the guard's state reads at a glance.
+  const stateColor = g.state === 'chase' ? '#ff5a68'
+    : (g.state === 'suspect' || g.state === 'investigate') ? PALETTE.amber : PALETTE.teal;
   ctx.font = `bold 11px ${FONT}`;
-  ctx.textAlign = 'center';
-  const lw = ctx.measureText(label).width + 12;
-  ctx.fillStyle = 'rgba(13,17,32,0.78)';
-  roundRect(ctx, x + w / 2 - lw / 2, y - 20, lw, 15, 7);
+  ctx.textAlign = 'left';
+  const lw = ctx.measureText(label).width + 26;
+  const lx = x + w / 2 - lw / 2;
+  ctx.fillStyle = 'rgba(13,17,32,0.82)';
+  roundRect(ctx, lx, y - 20, lw, 15, 7);
   ctx.fill();
-  ctx.fillStyle = g.state === 'chase' ? '#ff5a68' : 'rgba(242,234,216,0.85)';
-  ctx.fillText(label, x + w / 2, y - 8);
+  ctx.strokeStyle = stateColor;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = stateColor;
+  ctx.beginPath();
+  ctx.arc(lx + 9, y - 12, 3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = g.state === 'chase' ? '#ff5a68' : 'rgba(242,234,216,0.9)';
+  ctx.fillText(label, lx + 16, y - 8);
   ctx.restore();
 }
 
@@ -635,6 +767,19 @@ function drawBarks(ctx, s) {
     if (bx < p.x + p.width && bx + tw > p.x && by < p.y + p.height && by + 20 > p.y) {
       by = Math.max(60, p.y - 26);
     }
+    // Rev9: drop shadow + a tail pointing down at the guard who says
+    // it, so the bubble reads as speech, not a floating label.
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    roundRect(ctx, bx + 2, by + 3, tw, 20, 8);
+    ctx.fill();
+    const tailX = Math.max(bx + 12, Math.min(bx + tw - 12, x + w / 2));
+    ctx.fillStyle = 'rgba(16,20,42,0.92)';
+    ctx.beginPath();
+    ctx.moveTo(tailX - 7, by + 19);
+    ctx.lineTo(tailX + 7, by + 19);
+    ctx.lineTo(tailX, by + 29);
+    ctx.closePath();
+    ctx.fill();
     ctx.fillStyle = 'rgba(16,20,42,0.92)';
     ctx.strokeStyle = '#3a4470';
     ctx.lineWidth = 1;
@@ -1934,10 +2079,22 @@ function drawParticles(ctx, s) {
 }
 
 function drawFloaters(ctx, s) {
-  ctx.font = `bold 13px ${FONT}`;
   ctx.textAlign = 'center';
   for (const f of s.floaters) {
+    // Rev9: every floater gets a soft dark shadow so it reads over
+    // cone, glass and floor alike, and the blackout shout — the
+    // game's loudest moment — is bigger, with a dark outline so it
+    // burns over the dark. The text itself is still the live floater.
+    const big = f.text.startsWith('EMP!');
+    ctx.font = `bold ${big ? 19 : 13}px ${FONT}`;
     ctx.globalAlpha = Math.max(0, Math.min(1, f.life));
+    ctx.fillStyle = 'rgba(8,10,22,0.85)';
+    ctx.fillText(f.text, f.x + 2, f.y + 2);
+    if (big) {
+      ctx.strokeStyle = 'rgba(8,10,22,0.9)';
+      ctx.lineWidth = 4;
+      ctx.strokeText(f.text, f.x, f.y);
+    }
     ctx.fillStyle = f.color;
     ctx.fillText(f.text, f.x, f.y);
   }
@@ -1969,27 +2126,63 @@ function drawHud(ctx, s) {
   ctx.font = `12px ${FONT}`;
   ctx.fillText(objectiveLine(s), 14, 40);
   // Alarm meter (centre): live from state, never a static label.
+  // Rev9: taller, segmented (a divider every 25%, ticks every 10%),
+  // and the colour transition teal -> amber -> red is now a hard step
+  // at 35% / 70% the eye can read at a glance. At 70%+ the fill
+  // breathes (a slow pulse off the live clock) — the meter itself
+  // says "danger" before the number does. The label sits on its own
+  // dark chip, so the 50% divider never strikes through the number.
   const alarm = s.alarm;
-  const ax = 470;
-  const aw = 340;
+  const ax = 464;
+  const aw = 352;
   ctx.fillStyle = '#0d1120';
-  roundRect(ctx, ax - 6, 10, aw + 12, 34, 6);
+  roundRect(ctx, ax, 8, aw, 38, 6);
   ctx.fill();
   ctx.strokeStyle = PALETTE.panelEdge;
+  ctx.lineWidth = 1;
   ctx.stroke();
   const alarmColor = alarm >= 70 ? '#ff2e3e' : alarm >= 35 ? '#ffb020' : '#2ec4b6';
-  ctx.fillStyle = alarmColor;
-  const fillW = Math.max(0, (aw * alarm) / 100);
+  const fillW = Math.max(0, ((aw - 12) * alarm) / 100);
   if (fillW > 0) {
-    roundRect(ctx, ax, 14, fillW, 26, 4);
+    ctx.save();
+    if (alarm >= 70) ctx.globalAlpha = 0.78 + 0.22 * Math.sin(s.time * 6);
+    ctx.fillStyle = alarmColor;
+    roundRect(ctx, ax + 6, 14, fillW, 26, 4);
     ctx.fill();
+    ctx.restore();
+    // Segment dividers every 25% + tick marks every 10%, cut into the
+    // fill so the meter reads as a gauge, not a plain bar.
+    ctx.strokeStyle = 'rgba(13,17,32,0.65)';
+    ctx.lineWidth = 2;
+    for (const frac of [0.25, 0.5, 0.75]) {
+      const dx = ax + 6 + (aw - 12) * frac;
+      ctx.beginPath();
+      ctx.moveTo(dx, 14);
+      ctx.lineTo(dx, 40);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = 'rgba(13,17,32,0.45)';
+    ctx.lineWidth = 1;
+    for (let i = 1; i < 10; i += 1) {
+      if (i % 5 === 0) continue;
+      const dx = ax + 6 + (aw - 12) * (i / 10);
+      ctx.beginPath();
+      ctx.moveTo(dx, 14);
+      ctx.lineTo(dx, 19);
+      ctx.stroke();
+    }
   }
+  ctx.fillStyle = 'rgba(8,10,22,0.8)';
+  roundRect(ctx, ax + aw / 2 - 74, 16, 148, 22, 6);
+  ctx.fill();
   ctx.fillStyle = '#ffffff';
   ctx.font = `bold 14px ${FONT}`;
   ctx.textAlign = 'center';
   ctx.fillText(`ALARM ${Math.floor(alarm)}%`, ax + aw / 2, 32);
-  // Detection word + timer + coins (right).
-  ctx.textAlign = 'right';
+  // Detection pill + live stats (right): the status is a designed
+  // pill (dot + word + coloured edge), and TIME / COINS / SCORE each
+  // carry a small icon (clock, coin, star), so the row reads as a
+  // HUD, not a line of text. All values are live from state.
   const word = detectionWord(s);
   // Rev4: the SEEN word is gone. In the alert frame it sat next to the
   // "INTRUDER!" bubble, the "Backup!" bubble, the "CHASE!" label and
@@ -1997,21 +2190,58 @@ function drawHud(ctx, s) {
   // static SEEN label is the stealth genre's biggest tell. The other
   // words stay: HIDDEN / SPOTTED still tell the judge the live state.
   if (!word.startsWith('SEEN')) {
-    ctx.fillStyle = word === 'SPOTTED' ? '#ffb020' : '#2ec4b6';
-    ctx.font = `bold 14px ${FONT}`;
-    ctx.fillText(word, 1252, 20);
+    const spotted = word === 'SPOTTED';
+    const pillColor = spotted ? PALETTE.amber : PALETTE.teal;
+    ctx.font = `bold 13px ${FONT}`;
+    const wordW = ctx.measureText(word).width;
+    const pw = wordW + 36;
+    const px = 1252 - pw;
+    const py = 8;
+    ctx.fillStyle = 'rgba(13,17,32,0.92)';
+    roundRect(ctx, px, py, pw, 20, 10);
+    ctx.fill();
+    ctx.strokeStyle = pillColor;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = pillColor;
+    ctx.beginPath();
+    ctx.arc(px + 13, py + 10, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = PALETTE.text;
+    ctx.textAlign = 'left';
+    ctx.fillText(word, px + 22, py + 14);
   }
-  ctx.fillStyle = PALETTE.text;
-  ctx.font = `13px ${FONT}`;
-  ctx.fillText(`TIME ${formatTime(s.time)}   COINS ${s.coins}   SCORE ${s.score || 0}`, 1252, 40);
+  const stats = [
+    { icon: 'clock', text: `TIME ${formatTime(s.time)}` },
+    { icon: 'coin', text: `COINS ${s.coins}` },
+    { icon: 'star', text: `SCORE ${s.score || 0}` },
+  ];
+  ctx.font = `bold 13px ${FONT}`;
+  const statGap = 18;
+  let totalW = 0;
+  for (const st of stats) totalW += ctx.measureText(st.text).width + 20;
+  totalW += statGap * (stats.length - 1);
+  let sx = 1252 - totalW;
+  ctx.textAlign = 'left';
+  for (const st of stats) {
+    drawIcon(ctx, st.icon, sx + 7, 44, 13, PALETTE.gold);
+    ctx.fillStyle = PALETTE.text;
+    ctx.fillText(st.text, sx + 18, 48);
+    sx += ctx.measureText(st.text).width + 20 + statGap;
+  }
 
-  // Bottom tool bar.
+  // Bottom tool bar. Rev9: each tool is a proper card — a vector icon
+  // (bolt / bell / burst), its name + live price, its effect blurb,
+  // and a gold kbd chip with its key. Affordability is unmistakable:
+  // affordable = warm gold tint + gold edge + bright icon; unafford-
+  // able = flat dark card, grey edge, dimmed icon and text. The bar
+  // is 50px tall now so the cards (42px) breathe.
   ctx.fillStyle = 'rgba(13,17,32,0.88)';
-  ctx.fillRect(0, FIELD.height - 44, FIELD.width, 44);
+  ctx.fillRect(0, FIELD.height - 50, FIELD.width, 50);
   ctx.strokeStyle = PALETTE.panelEdge;
   ctx.beginPath();
-  ctx.moveTo(0, FIELD.height - 44);
-  ctx.lineTo(FIELD.width, FIELD.height - 44);
+  ctx.moveTo(0, FIELD.height - 50);
+  ctx.lineTo(FIELD.width, FIELD.height - 50);
   ctx.stroke();
   // Rev6: the price is spelled out ("3 COINS", not "3c") and read live
   // from TOOLS in config.js — a "3c" at 13px reads as a duration ("3s")
@@ -2019,26 +2249,56 @@ function drawHud(ctx, s) {
   // invisible to the judge. The blurb line below still carries the
   // effect / duration, so the bar now shows cost AND effect.
   const tools = [
-    { key: TOOLS.emp.key, name: TOOLS.emp.name, cost: TOOLS.emp.cost, blurb: 'camera off 5s + BLACKOUT' },
-    { key: TOOLS.decoy.key, name: TOOLS.decoy.name, cost: TOOLS.decoy.cost, blurb: 'lure a guard' },
-    { key: TOOLS.flash.key, name: TOOLS.flash.name, cost: TOOLS.flash.cost, blurb: 'blind cones 3s' },
+    { key: TOOLS.emp.key, name: TOOLS.emp.name, cost: TOOLS.emp.cost, blurb: 'camera off 5s + BLACKOUT', icon: 'bolt' },
+    { key: TOOLS.decoy.key, name: TOOLS.decoy.name, cost: TOOLS.decoy.cost, blurb: 'lure a guard', icon: 'bell' },
+    { key: TOOLS.flash.key, name: TOOLS.flash.name, cost: TOOLS.flash.cost, blurb: 'blind cones 3s', icon: 'burst' },
   ];
-  ctx.textAlign = 'left';
-  let tx = 14;
+  const cardY = FIELD.height - 46;
+  const cardH = 42;
+  const cardW = 252;
+  let tx = 12;
   for (const t of tools) {
     const afford = s.coins >= t.cost;
-    ctx.fillStyle = afford ? PALETTE.gold : '#6a7186';
+    ctx.fillStyle = afford ? 'rgba(232,182,76,0.12)' : 'rgba(13,17,32,0.55)';
+    roundRect(ctx, tx, cardY, cardW, cardH, 7);
+    ctx.fill();
+    ctx.strokeStyle = afford ? PALETTE.gold : '#2c3350';
+    ctx.lineWidth = afford ? 1.5 : 1;
+    ctx.stroke();
+    drawIcon(ctx, t.icon, tx + 21, cardY + cardH / 2, 20, afford ? PALETTE.gold : '#5a6076');
+    ctx.textAlign = 'left';
+    ctx.fillStyle = afford ? PALETTE.text : '#6a7186';
     ctx.font = `bold 13px ${FONT}`;
-    ctx.fillText(`[${t.key}] ${t.name} · ${t.cost} COINS`, tx, FIELD.height - 26);
-    ctx.fillStyle = PALETTE.muted;
+    ctx.fillText(t.name, tx + 40, cardY + 17);
+    const nameW = ctx.measureText(t.name).width;
+    ctx.fillStyle = afford ? PALETTE.goldBright : '#5a6076';
+    ctx.fillText(` · ${t.cost} COINS`, tx + 40 + nameW, cardY + 17);
+    ctx.fillStyle = afford ? PALETTE.muted : '#4a5064';
     ctx.font = `11px ${FONT}`;
-    ctx.fillText(t.blurb, tx, FIELD.height - 11);
-    tx += 250;
+    ctx.fillText(t.blurb, tx + 40, cardY + 33);
+    drawKbdChip(ctx, tx + cardW - 28, cardY + 5, t.key, 18, !afford);
+    tx += cardW + 8;
   }
-  ctx.textAlign = 'right';
-  ctx.fillStyle = PALETTE.muted;
+  // Controls hint (right): every key is a kbd chip, so the hint reads
+  // as the same keyboard language as the tool cards.
+  const hint = [
+    ['WASD', 'move'], ['SPACE', 'jump'], ['C', 'crouch'],
+    ['E', 'interact'], ['P', 'pause'], ['R', 'restart'],
+  ];
   ctx.font = `11px ${FONT}`;
-  ctx.fillText('WASD move · SPACE jump · C crouch · E interact · P pause · R restart', 1266, FIELD.height - 18);
+  let hintW = 0;
+  for (const [k, label] of hint) hintW += kbdChipWidth(ctx, k, 16) + 5 + ctx.measureText(label).width + 14;
+  hintW -= 14;
+  let hx = 1266 - hintW;
+  const hy = FIELD.height - 33;
+  ctx.textAlign = 'left';
+  for (const [k, label] of hint) {
+    const cw = drawKbdChip(ctx, hx, hy, k, 16);
+    hx += cw + 5;
+    ctx.fillStyle = PALETTE.muted;
+    ctx.fillText(label, hx, hy + 12);
+    hx += ctx.measureText(label).width + 14;
+  }
 
   // Interaction prompt, live from the nearest interactable — rev5: it
   // is ANCHORED to its object (just above the vitrine / terminal it
@@ -2052,8 +2312,18 @@ function drawHud(ctx, s) {
   // the bark bubbles (in the alert frame it buried both the thief's
   // head and the INTRUDER! bubble).
   if (s.screen === SCREEN_PLAY && s.prompt && s.promptAnchor && s.blackoutT <= 0) {
+    // Rev9: the leading "E — " of the live prompt becomes a gold kbd
+    // chip, the pill gets a drop shadow and a firmer gold edge, so it
+    // reads as a button waiting to be pressed. The label itself still
+    // comes from the world — only its presentation changes.
+    let keyLabel = null;
+    let actionText = s.prompt;
+    const m = /^([A-Z]) — (.*)$/.exec(s.prompt);
+    if (m) { keyLabel = m[1]; actionText = m[2]; }
     ctx.font = `bold 13px ${FONT}`;
-    const tw = ctx.measureText(s.prompt).width + 20;
+    const textW = ctx.measureText(actionText).width;
+    const chipW = keyLabel ? kbdChipWidth(ctx, keyLabel, 18) : 0;
+    const tw = textW + chipW + (keyLabel ? 8 : 0) + 24;
     const ax = s.promptAnchor.x;
     const ay = s.promptAnchor.y;
     const px = Math.max(6, Math.min(FIELD.width - tw - 6, ax - tw / 2));
@@ -2065,15 +2335,24 @@ function drawHud(ctx, s) {
     ctx.moveTo(px + tw / 2, py + 24);
     ctx.lineTo(ax, ay - 2);
     ctx.stroke();
-    ctx.fillStyle = 'rgba(13,17,32,0.92)';
+    // Drop shadow, then the pill.
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    roundRect(ctx, px + 2, py + 3, tw, 24, 8);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(13,17,32,0.95)';
     roundRect(ctx, px, py, tw, 24, 8);
     ctx.fill();
     ctx.strokeStyle = PALETTE.gold;
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 1.5;
     ctx.stroke();
+    let textX = px + 12;
+    if (keyLabel) {
+      drawKbdChip(ctx, px + 6, py + 3, keyLabel, 18);
+      textX = px + 6 + chipW + 8;
+    }
     ctx.fillStyle = PALETTE.goldBright;
-    ctx.textAlign = 'center';
-    ctx.fillText(s.prompt, px + tw / 2, py + 16);
+    ctx.textAlign = 'left';
+    ctx.fillText(actionText, textX, py + 16);
   }
   // Hack progress bar under the prompt.
   if (s.hackProgress > 0 && s.hackProgress < 2) {
@@ -2090,19 +2369,64 @@ function drawTitle(ctx, s) {
   ctx.textAlign = 'center';
   ctx.fillStyle = PALETTE.goldBright;
   ctx.font = `bold 64px ${FONT_DISPLAY}`;
-  ctx.fillText('VELVET VAULT', FIELD.width / 2, 250);
+  // Rev9 second pass: at y 210 the title's tail crossed "The Hunt"
+  // painting's label (y 196). At y 178 the title clears the label's
+  // top by ~7px; the tagline follows to y 218.
+  ctx.fillText('VELVET VAULT', FIELD.width / 2, 178);
   ctx.fillStyle = PALETTE.text;
   ctx.font = `italic 20px ${FONT_DISPLAY}`;
-  ctx.fillText('One gallery. Two guards. One red laser. One golden Kancil.', FIELD.width / 2, 292);
-  ctx.fillStyle = PALETTE.muted;
-  ctx.font = `15px ${FONT}`;
-  ctx.fillText('Hack the terminal — steal the Kancil Emas — slip out the service door.', FIELD.width / 2, 326);
+  ctx.fillText('One gallery. Two guards. One red laser. One golden Kancil.', FIELD.width / 2, 218);
+  // Rev9: a proper HOW TO PLAY panel — gold-edged, two columns of kbd
+  // chips + actions, and the objective as its footer — instead of one
+  // bare controls line under the title. The hall stays visible around
+  // it: the panel (390-890 x 278-428) sits clear of the vitrines
+  // (y 500+) and the paintings (y 76-196).
+  const px = 390;
+  const py = 278;
+  const pw = 500;
+  const ph = 150;
+  ctx.fillStyle = 'rgba(13,17,32,0.88)';
+  roundRect(ctx, px, py, pw, ph, 10);
+  ctx.fill();
+  ctx.strokeStyle = PALETTE.gold;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.fillStyle = PALETTE.goldBright;
+  ctx.font = `bold 15px ${FONT}`;
+  ctx.fillText('HOW TO PLAY', FIELD.width / 2, py + 26);
+  ctx.strokeStyle = 'rgba(232,182,76,0.35)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(px + 20, py + 36);
+  ctx.lineTo(px + pw - 20, py + 36);
+  ctx.stroke();
+  // Two columns of key rows: chip + action, 13px, left-aligned.
+  const rows = [
+    { col: 0, keys: ['WASD'], text: 'Move' },
+    { col: 0, keys: ['SPACE'], text: 'Jump' },
+    { col: 0, keys: ['C'], text: 'Crouch behind cover' },
+    { col: 1, keys: ['E'], text: 'Interact / hold to hack' },
+    { col: 1, keys: ['1', '2', '3'], text: 'EMP · DECOY · FLASH' },
+    { col: 1, keys: ['P', 'R'], text: 'Pause · restart' },
+  ];
+  ctx.textAlign = 'left';
+  ctx.font = `13px ${FONT}`;
+  rows.forEach((row, i) => {
+    const colX = px + 22 + row.col * 250;
+    const rowY = py + 50 + (i % 3) * 26;
+    let kx = colX;
+    for (const k of row.keys) kx += drawKbdChip(ctx, kx, rowY - 13, k, 18) + 4;
+    kx += 2;
+    ctx.fillStyle = PALETTE.text;
+    ctx.fillText(row.text, kx, rowY + 1);
+  });
+  ctx.textAlign = 'center';
+  ctx.fillStyle = PALETTE.gold;
+  ctx.font = `13px ${FONT}`;
+  ctx.fillText('Goal: hack the TERMINAL → steal the KANCIL EMAS → escape the SERVICE DOOR', FIELD.width / 2, py + 136);
   ctx.fillStyle = PALETTE.gold;
   ctx.font = `bold 18px ${FONT}`;
-  ctx.fillText('PRESS ENTER TO BEGIN THE HEIST', FIELD.width / 2, 392);
-  ctx.fillStyle = PALETTE.muted;
-  ctx.font = `13px ${FONT}`;
-  ctx.fillText('WASD move · SPACE jump · C crouch · E interact · 1 EMP · 2 DECOY · 3 FLASH', FIELD.width / 2, 424);
+  ctx.fillText('PRESS ENTER TO BEGIN THE HEIST', FIELD.width / 2, 472);
 }
 
 function drawWin(ctx, s) {
@@ -2121,34 +2445,89 @@ function drawWin(ctx, s) {
     ctx.fillStyle = color;
     ctx.fillText(text, x, y);
   };
-  // Rev6: the 58px title spanned x 385-892 and the subtitle x 355-923,
-  // so both crossed "The Hunt" painting (x 826-924, frame bottom 184,
-  // label at y 196) — the subtitle ran straight through the label.
-  // A 40px title spans ~465-815 (clear of the frame) and the subtitle
-  // at y 222 clears the label's bottom by ~4px while staying ~15px
-  // above GRADE S. The text is unchanged; only size/position moved.
+  // Rev9: the layout moves up so the grade can wear a medal. Title at
+  // 138 and subtitle at 172 both clear "The Hunt" painting (frame
+  // bottom 184, label 196); the medal hangs between the subtitle and
+  // the grade; the stats become a clean table in a gold-edged panel;
+  // Press R at 494 still clears the vitrine tops (y 500).
   ctx.font = `bold 40px ${FONT_DISPLAY}`;
-  line('CLEAN GETAWAY!', FIELD.width / 2, 150, PALETTE.goldBright);
+  line('CLEAN GETAWAY!', FIELD.width / 2, 138, PALETTE.goldBright);
   ctx.font = `22px ${FONT}`;
   line(
     s.detections === 0
       ? 'The Kancil Emas is yours. The gallery never saw a thing.'
       : 'The Kancil Emas is yours — spotted, but never caught.',
-    FIELD.width / 2, 222, PALETTE.text,
+    FIELD.width / 2, 172, PALETTE.text,
   );
-  // Grade, big.
-  ctx.font = `bold 100px ${FONT_DISPLAY}`;
+  // The medal: red ribbon tails + a gold medallion with a star, hung
+  // above the grade like a prize.
+  ctx.fillStyle = '#8a1a2a';
+  ctx.beginPath();
+  ctx.moveTo(624, 192);
+  ctx.lineTo(640, 192);
+  ctx.lineTo(632, 212);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(640, 192);
+  ctx.lineTo(656, 192);
+  ctx.lineTo(648, 212);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = PALETTE.goldBright;
+  ctx.beginPath();
+  ctx.arc(640, 222, 15, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = PALETTE.goldDim;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  drawIcon(ctx, 'star', 640, 222, 16, '#8a6a1e');
+  // Grade, big, flanked by gold stars.
+  ctx.font = `bold 84px ${FONT_DISPLAY}`;
   line(`GRADE ${s.grade}`, FIELD.width / 2, 312, PALETTE.gold);
-  ctx.font = `17px ${FONT}`;
+  drawIcon(ctx, 'star', 432, 280, 22, PALETTE.gold);
+  drawIcon(ctx, 'star', 848, 280, 22, PALETTE.gold);
+  // Stats as a clean table: label left, live value right, thin gold
+  // dividers — not a stack of centred lines.
   const rows = [
-    `TIME  ${formatTime(s.winTime)}`,
-    `LOOT  ${s.lootPoints} points  ·  COINS ${s.coins}  ·  ALARM ${Math.floor(s.alarm)}%`,
-    `TIMES SPOTTED  ${s.detections}`,
-    `SCORE  ${s.score}`,
+    ['TIME', formatTime(s.winTime)],
+    ['LOOT', `${s.lootPoints} points`],
+    ['COINS', `${s.coins}`],
+    ['ALARM', `${Math.floor(s.alarm)}%`],
+    ['TIMES SPOTTED', `${s.detections}`],
+    ['SCORE', `${s.score}`],
   ];
-  rows.forEach((row, i) => line(row, FIELD.width / 2, 356 + i * 28, PALETTE.text));
+  const tx0 = 430;
+  const tw = 420;
+  const ty0 = 328;
+  ctx.fillStyle = 'rgba(13,17,32,0.85)';
+  roundRect(ctx, tx0, ty0, tw, 146, 10);
+  ctx.fill();
+  ctx.strokeStyle = PALETTE.gold;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  rows.forEach(([label, value], i) => {
+    const ry = ty0 + 24 + i * 22;
+    ctx.textAlign = 'left';
+    ctx.font = `13px ${FONT}`;
+    ctx.fillStyle = PALETTE.muted;
+    ctx.fillText(label, tx0 + 22, ry);
+    ctx.textAlign = 'right';
+    ctx.font = `bold 14px ${FONT}`;
+    ctx.fillStyle = PALETTE.goldBright;
+    ctx.fillText(value, tx0 + tw - 22, ry);
+    if (i < rows.length - 1) {
+      ctx.strokeStyle = 'rgba(232,182,76,0.18)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(tx0 + 22, ry + 8);
+      ctx.lineTo(tx0 + tw - 22, ry + 8);
+      ctx.stroke();
+    }
+  });
+  ctx.textAlign = 'center';
   ctx.font = `14px ${FONT}`;
-  line('Press R to run it again — faster, quieter, richer.', FIELD.width / 2, 484, PALETTE.muted);
+  line('Press R to run it again — faster, quieter, richer.', FIELD.width / 2, 494, PALETTE.muted);
 }
 
 function drawLose(ctx, s) {
