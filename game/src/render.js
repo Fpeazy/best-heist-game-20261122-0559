@@ -3,8 +3,9 @@
 // cover, amber guard cones, a red camera laser, gold loot. The thief is a
 // big white silhouette with a dark outline, findable at a glance.
 import {
-  CAMERA, COINS, COVER, FIELD, GUARD, PALETTE, PLATFORMS, SERVICE_DOOR,
-  TERMINAL, TOOLS, VITRINES, FONT, FONT_DISPLAY,
+  CAMERA, COINS, COVER, EXTRA_LOOT, FIELD, GUARD, HIDE_SPOTS, LOCKER,
+  PALETTE, PLATFORMS, SERVICE_DOOR, SWITCHES, TERMINAL, TOOLS, VITRINES,
+  FONT, FONT_DISPLAY,
 } from './config.js';
 import { coneRayHit, laserHit } from './vision.js';
 import { mulberry32 } from './random.js';
@@ -12,6 +13,10 @@ import {
   SCREEN_LOSE, SCREEN_PLAY, SCREEN_TITLE, SCREEN_WIN,
   detectionWord, objectiveLine,
 } from './world.js';
+
+// Rev11 — pre-heist planning is a main.js screen ('planning'); world.js
+// is frozen for this package, so render.js names it locally.
+const SCREEN_PLANNING = 'planning';
 
 const GRID_BEAMS = [596, 660, 724];
 
@@ -378,6 +383,21 @@ function drawIcon(ctx, kind, cx, cy, size, color) {
   } else if (kind === 'burst') {
     starPath(ctx, cx, cy, s, s * 0.28, 8);
     ctx.fill();
+  } else if (kind === 'key') {
+    // A small key: bow (ring) + shaft + two teeth — the lockpick.
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx - s * 0.45, cy, s * 0.32, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(cx - s * 0.15, cy);
+    ctx.lineTo(cx + s * 0.85, cy);
+    ctx.moveTo(cx + s * 0.55, cy);
+    ctx.lineTo(cx + s * 0.55, cy + s * 0.4);
+    ctx.moveTo(cx + s * 0.85, cy);
+    ctx.lineTo(cx + s * 0.85, cy + s * 0.3);
+    ctx.stroke();
   }
   ctx.restore();
 }
@@ -505,6 +525,10 @@ function drawLaser(ctx, state) {
 
 function drawThief(ctx, s) {
   const p = s.player;
+  // Hidden in a wardrobe: the thief is inside it — the wardrobe itself
+  // (drawn in drawRoom) shows the doors and the peeking fedora, so the
+  // body is not drawn here at all.
+  if (p.hidden) return;
   const bob = p.onGround && p.vx !== 0 ? Math.sin(s.time * 14) * 2 : 0;
   const x = p.x;
   const y = p.y + bob;
@@ -636,6 +660,38 @@ function drawThief(ctx, s) {
     ctx.strokeStyle = PALETTE.goldDim;
     ctx.lineWidth = 2;
     ctx.stroke();
+  }
+  // Rev11 — disguise: the guard uniform. A navy peaked cap over the
+  // fedora and a cool blue wash over the white coat, so the disguised
+  // thief reads as "one of the guards" at a glance — the HUD pill
+  // carries the timer, the figure carries the look.
+  if (s.disguise && s.disguise.active) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(x + w * 0.5, y + 6);
+    ctx.lineTo(x + w * 0.86, y + h * 0.42);
+    ctx.lineTo(x + w * 0.78 + hemSway, y + h);
+    ctx.lineTo(x + w * 0.22 - hemSway, y + h);
+    ctx.lineTo(x + w * 0.14, y + h * 0.42);
+    ctx.closePath();
+    ctx.clip();
+    ctx.fillStyle = 'rgba(58,74,107,0.45)';
+    ctx.fillRect(x, y, w, h);
+    ctx.restore();
+    // Peaked cap: navy crown + brim, worn over the fedora.
+    ctx.fillStyle = '#1d2a4a';
+    ctx.beginPath();
+    ctx.ellipse(x + w * 0.5, y + 2 + breath, 13, 4.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    roundRect(ctx, x + w * 0.5 - 7, y - 6 + breath, 14, 7, 3);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(232,182,76,0.85)';
+    ctx.fillRect(x + w * 0.5 - 7, y - 1 + breath, 14, 1.5);
+    // A small blue badge on the chest.
+    ctx.fillStyle = '#2ec4b6';
+    ctx.beginPath();
+    ctx.arc(x + w * 0.5, y + h * 0.45, 3, 0, Math.PI * 2);
+    ctx.fill();
   }
   ctx.restore();
 }
@@ -1121,6 +1177,219 @@ function drawVitrine(ctx, s, key, v) {
   ctx.fillText(v.label, v.x + v.w / 2, v.y + v.h + 30);
 }
 
+/**
+ * Rev11 — the new systems' objects, drawn as part of the room: the
+ * guard-uniform locker, the two wardrobe hide spots, the two light
+ * switches, and the extra loot (Gold Bar, Porcelain Vase) on their
+ * pedestals. Every label is live from state (EMPTY once the uniform
+ * is taken, LIGHTS ON/OFF from the live switch, HIDDEN while the
+ * thief is inside a wardrobe); taken loot is not drawn.
+ */
+function drawRev11Objects(ctx, s) {
+  // The guard-uniform locker, far right of the upper floor.
+  {
+    const l = LOCKER;
+    const metal = ctx.createLinearGradient(l.x, l.y, l.x + l.w, l.y);
+    metal.addColorStop(0, '#3a4a3a');
+    metal.addColorStop(0.5, '#2a3a2a');
+    metal.addColorStop(1, '#1d2a1a');
+    ctx.fillStyle = metal;
+    roundRect(ctx, l.x, l.y, l.w, l.h, 3);
+    ctx.fill();
+    ctx.strokeStyle = PALETTE.goldDim;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // Vent slats at the top + door seam + handle.
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 3; i += 1) {
+      ctx.beginPath();
+      ctx.moveTo(l.x + 8, l.y + 10 + i * 5);
+      ctx.lineTo(l.x + l.w - 8, l.y + 10 + i * 5);
+      ctx.stroke();
+    }
+    ctx.beginPath();
+    ctx.moveTo(l.x + l.w / 2, l.y + 26);
+    ctx.lineTo(l.x + l.w / 2, l.y + l.h - 8);
+    ctx.stroke();
+    ctx.fillStyle = PALETTE.gold;
+    ctx.fillRect(l.x + l.w / 2 + 4, l.y + 52, 3, 10);
+    if (!s.lockerUsed) {
+      // A navy cap hangs on the door: the uniform is still inside.
+      ctx.fillStyle = '#1d2a4a';
+      ctx.beginPath();
+      ctx.ellipse(l.x + l.w / 2, l.y + 40, 9, 3.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      roundRect(ctx, l.x + l.w / 2 - 5, l.y + 33, 10, 5, 2);
+      ctx.fill();
+    } else {
+      ctx.fillStyle = PALETTE.muted;
+      ctx.font = `bold 8px ${FONT}`;
+      ctx.textAlign = 'center';
+      ctx.fillText('EMPTY', l.x + l.w / 2, l.y + 70);
+    }
+    ctx.fillStyle = PALETTE.muted;
+    ctx.font = `bold 9px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.fillText('LOCKER', l.x + l.w / 2, l.y - 8);
+  }
+
+  // Wardrobe hide spots, one per floor.
+  for (const spot of HIDE_SPOTS) {
+    const isHidden = s.player.hidden
+      && Math.abs(s.player.x + s.player.width / 2 - (spot.x + spot.w / 2)) < 8;
+    const wood = ctx.createLinearGradient(spot.x, spot.y, spot.x + spot.w, spot.y);
+    wood.addColorStop(0, '#5e4426');
+    wood.addColorStop(0.5, '#4a3421');
+    wood.addColorStop(1, '#3a2a18');
+    ctx.fillStyle = wood;
+    roundRect(ctx, spot.x, spot.y, spot.w, spot.h, 3);
+    ctx.fill();
+    ctx.strokeStyle = '#2a1c0e';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // Double doors + brass knobs.
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(spot.x + spot.w / 2, spot.y + 6);
+    ctx.lineTo(spot.x + spot.w / 2, spot.y + spot.h - 6);
+    ctx.stroke();
+    ctx.fillStyle = PALETTE.gold;
+    ctx.beginPath();
+    ctx.arc(spot.x + spot.w / 2 - 6, spot.y + spot.h / 2, 2.5, 0, Math.PI * 2);
+    ctx.arc(spot.x + spot.w / 2 + 6, spot.y + spot.h / 2, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+    // Cornice + lit top edge.
+    ctx.fillStyle = '#6b5a2e';
+    ctx.fillRect(spot.x - 3, spot.y - 4, spot.w + 6, 5);
+    ctx.fillStyle = 'rgba(255,220,150,0.3)';
+    ctx.fillRect(spot.x, spot.y + 1, spot.w, 2);
+    if (isHidden) {
+      // Doors ajar: a dark gap + the fedora peeking over the top.
+      ctx.fillStyle = '#0d1120';
+      ctx.fillRect(spot.x + spot.w / 2 - 3, spot.y + 6, 6, spot.h - 12);
+      ctx.fillStyle = PALETTE.thiefOutline;
+      ctx.beginPath();
+      ctx.ellipse(spot.x + spot.w / 2, spot.y - 2, 13, 4, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#2ec4b6';
+      ctx.font = `bold 10px ${FONT}`;
+      ctx.textAlign = 'center';
+      ctx.fillText('HIDDEN', spot.x + spot.w / 2, spot.y - 10);
+    } else {
+      ctx.fillStyle = PALETTE.muted;
+      ctx.font = `bold 9px ${FONT}`;
+      ctx.textAlign = 'center';
+      ctx.fillText('WARDROBE', spot.x + spot.w / 2, spot.y - 8);
+    }
+  }
+
+  // Light switches, one per floor: toggle up = on, down = off.
+  for (const sw of SWITCHES) {
+    const on = s.lights[sw.floor];
+    ctx.fillStyle = '#2a3040';
+    roundRect(ctx, sw.x - 7, sw.y - 10, 14, 20, 2);
+    ctx.fill();
+    ctx.strokeStyle = PALETTE.goldDim;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = on ? PALETTE.teal : '#8f1420';
+    ctx.fillRect(sw.x - 2, on ? sw.y - 7 : sw.y + 1, 4, 6);
+    ctx.fillStyle = on ? PALETTE.teal : '#ff5a68';
+    ctx.beginPath();
+    ctx.arc(sw.x + 9, sw.y - 12, 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = PALETTE.muted;
+    ctx.font = `bold 8px ${FONT}`;
+    ctx.textAlign = 'left';
+    ctx.fillText(on ? 'LIGHTS ON' : 'LIGHTS OFF', sw.x + 10, sw.y + 3);
+  }
+
+  // Extra loot on pedestals, upper floor.
+  if (!s.loot.goldbar) {
+    const g = EXTRA_LOOT.goldbar;
+    ctx.fillStyle = '#3a3450';
+    ctx.fillRect(g.x + 6, g.y + 44, g.w - 12, 16);
+    ctx.fillStyle = 'rgba(255,240,200,0.3)';
+    ctx.fillRect(g.x + 6, g.y + 44, g.w - 12, 2);
+    // A stack of three gold bars.
+    const bar = (bx, by, bw) => {
+      ctx.fillStyle = PALETTE.goldBright;
+      ctx.beginPath();
+      ctx.moveTo(bx, by);
+      ctx.lineTo(bx + 4, by - 8);
+      ctx.lineTo(bx + bw - 4, by - 8);
+      ctx.lineTo(bx + bw, by);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = PALETTE.goldDim;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    };
+    bar(g.x + 4, g.y + 44, 42);
+    bar(g.x + 8, g.y + 36, 34);
+    bar(g.x + 12, g.y + 28, 26);
+    const gbGlint = 0.4 + 0.4 * Math.sin(s.time * 2.4 + 1);
+    ctx.save();
+    ctx.globalAlpha = gbGlint;
+    ctx.strokeStyle = '#fff3c4';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(g.x + 20, g.y + 18);
+    ctx.lineTo(g.x + 28, g.y + 18);
+    ctx.moveTo(g.x + 24, g.y + 14);
+    ctx.lineTo(g.x + 24, g.y + 22);
+    ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = PALETTE.gold;
+    ctx.font = `bold 10px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.fillText('GOLD BAR', g.x + g.w / 2, g.y + g.h + 30);
+  }
+  if (!s.loot.vase) {
+    const v = EXTRA_LOOT.vase;
+    ctx.fillStyle = '#3a3450';
+    ctx.fillRect(v.x + 5, v.y + 44, v.w - 10, 16);
+    ctx.fillStyle = 'rgba(255,240,200,0.3)';
+    ctx.fillRect(v.x + 5, v.y + 44, v.w - 10, 2);
+    // Porcelain vase: blue-white body, narrow neck, floral sprigs.
+    const porce = ctx.createLinearGradient(v.x, v.y + 8, v.x + v.w, v.y + 44);
+    porce.addColorStop(0, '#eef4ff');
+    porce.addColorStop(0.5, '#c8d8f0');
+    porce.addColorStop(1, '#8fa8cc');
+    ctx.fillStyle = porce;
+    ctx.beginPath();
+    ctx.moveTo(v.x + v.w / 2 - 5, v.y + 8);
+    ctx.lineTo(v.x + v.w / 2 + 5, v.y + 8);
+    ctx.lineTo(v.x + v.w / 2 + 7, v.y + 16);
+    ctx.bezierCurveTo(v.x + v.w - 2, v.y + 24, v.x + v.w - 2, v.y + 38, v.x + v.w / 2 + 6, v.y + 44);
+    ctx.lineTo(v.x + v.w / 2 - 6, v.y + 44);
+    ctx.bezierCurveTo(v.x + 2, v.y + 38, v.x + 2, v.y + 24, v.x + v.w / 2 - 7, v.y + 16);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = '#5a6a88';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.strokeStyle = '#3a6fd8';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(v.x + v.w / 2 - 6, v.y + 36);
+    ctx.quadraticCurveTo(v.x + v.w / 2, v.y + 28, v.x + v.w / 2 + 6, v.y + 36);
+    ctx.stroke();
+    ctx.fillStyle = '#3a6fd8';
+    for (const [fx, fy] of [[-4, 30], [0, 26], [4, 30]]) {
+      ctx.beginPath();
+      ctx.arc(v.x + v.w / 2 + fx, v.y + fy, 1.8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = PALETTE.gold;
+    ctx.font = `bold 10px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.fillText('PORCELAIN VASE', v.x + v.w / 2, v.y + v.h + 30);
+  }
+}
+
 function drawRoom(ctx, s) {
   // Walls.
   ctx.fillStyle = PALETTE.wall;
@@ -1480,12 +1749,78 @@ function drawRoom(ctx, s) {
   // marble veins, slab seams, woven carpet, reflected light pools.
   ctx.drawImage(FLOOR_STRIP, 0, 620);
 
+  // Rev11 — the staircases are staircases, not floating planks. Each
+  // flight gets a slim diagonal stringer beam under the step nosings
+  // and a handrail with balusters above them, so the two storeys read
+  // as a building with stairs between them. The beams stay slim (open
+  // risers): the thief still reads standing in front of them, and the
+  // title pose at x=170 is not buried in a solid mass.
+  const stairFlight = (x0, y0, x1, y1) => {
+    // Stringer beam: a straight diagonal just under the nosing line.
+    ctx.strokeStyle = '#3a2a18';
+    ctx.lineWidth = 10;
+    ctx.beginPath();
+    ctx.moveTo(x0, y0 + 12);
+    ctx.lineTo(x1, y1 + 12);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,220,150,0.25)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x0, y0 + 8);
+    ctx.lineTo(x1, y1 + 8);
+    ctx.stroke();
+    // Handrail: parallel to the nosings, 44px above them.
+    ctx.strokeStyle = '#6b5a2e';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(x0 + 4, y0 - 44);
+    ctx.lineTo(x1 - 16, y1 - 44);
+    ctx.stroke();
+    // Balusters from the rail down to the nosing line.
+    ctx.strokeStyle = 'rgba(154,122,46,0.7)';
+    ctx.lineWidth = 2;
+    for (let bx = x0 + 24; bx < x1 - 20; bx += 36) {
+      const t = (bx - x0) / (x1 - x0);
+      const ny = y0 + (y1 - y0) * t;
+      ctx.beginPath();
+      ctx.moveTo(bx, ny - 44);
+      ctx.lineTo(bx, ny);
+      ctx.stroke();
+    }
+  };
+  stairFlight(60, 578, 316, 472);
+  stairFlight(958, 578, 1214, 472);
+  // The vent stairs zigzag up to the duct: one slim metal rail.
+  ctx.strokeStyle = '#4a5470';
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.moveTo(545, 386);
+  ctx.lineTo(685, 196);
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(207,232,255,0.3)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(545, 383);
+  ctx.lineTo(685, 193);
+  ctx.stroke();
+
   // Balcony walkway, steps, vent duct.
   for (const pf of PLATFORMS) {
     if (pf.kind === 'floor') continue;
     // Rev7: the balcony is timber with plank seams and a lit top edge;
     // the vent duct is brushed metal with a cool sheen.
     if (pf.kind === 'vent') {
+      const metal = ctx.createLinearGradient(0, pf.y, 0, pf.y + pf.h);
+      metal.addColorStop(0, '#4a5470');
+      metal.addColorStop(0.5, '#39415e');
+      metal.addColorStop(1, '#262c40');
+      ctx.fillStyle = metal;
+      ctx.fillRect(pf.x, pf.y, pf.w, pf.h);
+      ctx.fillStyle = 'rgba(207,232,255,0.25)';
+      ctx.fillRect(pf.x, pf.y, pf.w, 2);
+    } else if (pf.kind === 'step' && pf.y < 440) {
+      // Rev11 — the vent stairs are brushed metal treads, not timber:
+      // they climb to the duct, not to a wooden floor.
       const metal = ctx.createLinearGradient(0, pf.y, 0, pf.y + pf.h);
       metal.addColorStop(0, '#4a5470');
       metal.addColorStop(0.5, '#39415e');
@@ -1508,26 +1843,162 @@ function drawRoom(ctx, s) {
       ctx.fillStyle = 'rgba(255,220,150,0.3)';
       ctx.fillRect(pf.x, pf.y, pf.w, 2);
     }
-    ctx.fillStyle = PALETTE.goldDim;
-    ctx.fillRect(pf.x, pf.y, pf.w, 3);
+    // The gold nosing edge belongs to the timber floors and stairs;
+    // the metal vent steps keep their cool sheen instead.
+    if (!(pf.kind === 'step' && pf.y < 440)) {
+      ctx.fillStyle = PALETTE.goldDim;
+      ctx.fillRect(pf.x, pf.y, pf.w, 3);
+    }
   }
-  // Balcony railing.
-  ctx.strokeStyle = PALETTE.gold;
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(70, 440);
-  ctx.lineTo(560, 440);
-  ctx.stroke();
-  for (let x = 82; x < 560; x += 24) {
+  // Rev11 — the upper storey is a FLOOR, not a balcony: the railing is
+  // gone. What says "second storey" now is the slab's fascia beam
+  // underneath it, wall pilasters that carry it, a carpet runner on
+  // its timber, and its own wall dressing (panelling, paintings,
+  // sconces, a clock) on the wall behind it.
+  // Fascia beam under the slab + gold trim.
+  ctx.fillStyle = '#1b2240';
+  ctx.fillRect(70, 458, 1150, 14);
+  ctx.fillStyle = 'rgba(154,122,46,0.6)';
+  ctx.fillRect(70, 458, 1150, 2);
+  ctx.fillRect(70, 470, 1150, 2);
+  // Wall pilasters carrying the slab: flat strips on the back wall, so
+  // a guard walking in front of them reads fine (they are on the wall
+  // plane, not freestanding columns).
+  for (const px of [70, 700, 1208]) {
+    const pw = px === 700 ? 20 : 12;
+    ctx.fillStyle = '#1b2240';
+    ctx.fillRect(px, 472, pw, 148);
+    ctx.strokeStyle = 'rgba(154,122,46,0.45)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(px, 472, pw, 148);
+  }
+  // Carpet runner on the upper floor: deep red with gold edges.
+  ctx.fillStyle = PALETTE.carpet;
+  ctx.fillRect(90, 441, 1110, 7);
+  ctx.fillStyle = PALETTE.goldDim;
+  ctx.fillRect(90, 441, 1110, 1);
+  ctx.fillRect(90, 447, 1110, 1);
+  // Upper-wall panelling: slim vertical seams, so the long wall behind
+  // the upper floor reads as layered architecture.
+  ctx.strokeStyle = 'rgba(154,122,46,0.14)';
+  ctx.lineWidth = 1;
+  for (const px of [240, 400, 580, 780, 1040]) {
     ctx.beginPath();
-    ctx.moveTo(x, 440);
-    ctx.lineTo(x, 414);
+    ctx.moveTo(px, 212);
+    ctx.lineTo(px, 436);
     ctx.stroke();
   }
+  // Two small paintings on the upper wall, gilt frames like the big
+  // ones downstairs — a still life and a dancer.
+  const miniPaintings = [
+    { x: 470, label: 'Still Life', art: 'still' },
+    { x: 830, label: 'The Dancer', art: 'dancer' },
+  ];
+  for (const pg of miniPaintings) {
+    ctx.fillStyle = PALETTE.goldDim;
+    ctx.fillRect(pg.x - 4, 246, 72, 80);
+    ctx.strokeStyle = 'rgba(255,233,170,0.8)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(pg.x - 3, 247, 70, 78);
+    const cx = pg.x + 32;
+    if (pg.art === 'still') {
+      const bg = ctx.createLinearGradient(pg.x, 250, pg.x + 64, 322);
+      bg.addColorStop(0, '#3a5a3a');
+      bg.addColorStop(1, '#1d3a24');
+      ctx.fillStyle = bg;
+      ctx.fillRect(pg.x, 250, 64, 72);
+      // Amphora vase + three flowers on stems.
+      ctx.fillStyle = '#c8b090';
+      ctx.beginPath();
+      ctx.ellipse(cx, 306, 10, 12, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillRect(cx - 3, 290, 6, 6);
+      ctx.strokeStyle = '#2e5a2e';
+      ctx.lineWidth = 1.5;
+      for (const fx of [-8, 0, 8]) {
+        ctx.beginPath();
+        ctx.moveTo(cx + fx * 0.5, 292);
+        ctx.lineTo(cx + fx, 268);
+        ctx.stroke();
+      }
+      for (const [fx, color] of [[-8, '#d86a8a'], [0, '#e8b64c'], [8, '#f4ead0']]) {
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(cx + fx, 266, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else {
+      const bg = ctx.createLinearGradient(pg.x, 250, pg.x + 64, 322);
+      bg.addColorStop(0, '#5a3648');
+      bg.addColorStop(1, '#33202c');
+      ctx.fillStyle = bg;
+      ctx.fillRect(pg.x, 250, 64, 72);
+      // Dancer: head, leaning body, flared skirt.
+      ctx.fillStyle = '#e8d5b0';
+      ctx.beginPath();
+      ctx.arc(cx - 2, 266, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#e8d5b0';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(cx - 2, 272);
+      ctx.quadraticCurveTo(cx + 6, 288, cx - 2, 300);
+      ctx.stroke();
+      ctx.fillStyle = '#8a1a2a';
+      ctx.beginPath();
+      ctx.moveTo(cx - 2, 296);
+      ctx.lineTo(cx - 14, 318);
+      ctx.lineTo(cx + 12, 318);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.fillStyle = 'rgba(242,234,216,0.8)';
+    ctx.font = `italic 10px ${FONT_DISPLAY}`;
+    ctx.textAlign = 'center';
+    ctx.fillText(pg.label, pg.x + 32, 334);
+  }
+  // A round wall clock between the paintings, hands fixed at ten past ten.
+  ctx.fillStyle = '#f2ead8';
   ctx.beginPath();
-  ctx.moveTo(70, 414);
-  ctx.lineTo(560, 414);
+  ctx.arc(640, 232, 15, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = PALETTE.goldDim;
+  ctx.lineWidth = 2;
   ctx.stroke();
+  ctx.strokeStyle = '#14141c';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(640, 232);
+  ctx.lineTo(633, 224);
+  ctx.moveTo(640, 232);
+  ctx.lineTo(647, 226);
+  ctx.stroke();
+  ctx.fillStyle = '#14141c';
+  ctx.beginPath();
+  ctx.arc(640, 232, 2, 0, Math.PI * 2);
+  ctx.fill();
+  // Wall sconces: brass fixtures with a candle flame that breathes on
+  // the clock, and a small warm glow on the wall around each.
+  for (const [sx, sy] of [[640, 290], [1150, 290], [180, 490]]) {
+    const flick = 0.8 + 0.2 * Math.sin(s.time * 1.7 + sx * 0.05);
+    const sg = ctx.createRadialGradient(sx, sy - 6, 2, sx, sy - 6, 42);
+    sg.addColorStop(0, `rgba(255,205,110,${(0.14 * flick).toFixed(3)})`);
+    sg.addColorStop(1, 'rgba(255,205,110,0)');
+    ctx.fillStyle = sg;
+    ctx.beginPath();
+    ctx.arc(sx, sy - 6, 42, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#6b5a2e';
+    ctx.fillRect(sx - 4, sy - 2, 8, 16);
+    ctx.fillStyle = PALETTE.gold;
+    ctx.fillRect(sx - 6, sy - 4, 12, 3);
+    ctx.fillStyle = '#f4ead0';
+    ctx.fillRect(sx - 2, sy - 12, 4, 9);
+    ctx.fillStyle = '#ffd97a';
+    ctx.beginPath();
+    ctx.ellipse(sx, sy - 15, 2.5, 4 + flick, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
   // Vent duct grille.
   ctx.fillStyle = '#232c52';
   ctx.fillRect(690, 168, 540, 16);
@@ -1547,11 +2018,41 @@ function drawRoom(ctx, s) {
   // the vent coin at 1120.
   ctx.fillText('VENT — CRAWL ROUTE', 970, 158);
 
+  // Rev11 — floor lights + dimming. A floor whose lights are off (or a
+  // dimming event) darkens that floor's wall and floor — but the
+  // overlay is drawn here, inside drawRoom, so the thief, the cones,
+  // the laser, the loot and the HUD (all drawn later) stay bright and
+  // readable in the dark. The chandelier flicker dips the whole hall a
+  // little when it troughs.
+  if (s.lights && s.env) {
+    const dimAlpha = (floor) => {
+      let a = 0;
+      if (!s.lights[floor]) a += 0.38;
+      if (s.env.dimT > 0) a += 0.10 + 0.15 * (s.env.dimT / 5);
+      return Math.min(0.55, a);
+    };
+    const upperA = dimAlpha('upper');
+    if (upperA > 0) {
+      ctx.fillStyle = `rgba(6,8,20,${upperA.toFixed(3)})`;
+      ctx.fillRect(0, 46, FIELD.width, 426);
+    }
+    const groundA = dimAlpha('ground');
+    if (groundA > 0) {
+      ctx.fillStyle = `rgba(6,8,20,${groundA.toFixed(3)})`;
+      ctx.fillRect(0, 472, FIELD.width, 248);
+    }
+    if (s.env.flicker < 0.35) {
+      const fa = (0.35 - s.env.flicker) * 0.25;
+      ctx.fillStyle = `rgba(6,8,20,${fa.toFixed(3)})`;
+      ctx.fillRect(0, 46, FIELD.width, 674);
+    }
+  }
+
   // Teal safe-cover glow under every cover block.
   for (const c of COVER) {
     ctx.fillStyle = 'rgba(46,196,182,0.16)';
     ctx.beginPath();
-    ctx.ellipse(c.x + c.w / 2, 620, c.w / 2 + 26, 10, 0, 0, Math.PI * 2);
+    ctx.ellipse(c.x + c.w / 2, c.y + c.h, c.w / 2 + 26, 10, 0, 0, Math.PI * 2);
     ctx.fill();
   }
 
@@ -1771,6 +2272,25 @@ function drawRoom(ctx, s) {
       }
       ctx.fillStyle = PALETTE.gold;
       ctx.fillRect(c.x, c.y, c.w, 5);
+    } else if (c.kind === 'wall') {
+      // Rev11 — the partition wall: plaster brick with a gold cap,
+      // splitting the upper floor into two rooms. It is 80px tall so
+      // the thief jumps over it; the brick courses say "wall", not
+      // "block".
+      ctx.fillStyle = '#2a2438';
+      ctx.fillRect(c.x, c.y, c.w, c.h);
+      ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+      ctx.lineWidth = 1;
+      for (let by = c.y + 12; by < c.y + c.h; by += 12) {
+        ctx.beginPath();
+        ctx.moveTo(c.x, by);
+        ctx.lineTo(c.x + c.w, by);
+        ctx.stroke();
+      }
+      ctx.fillStyle = PALETTE.goldDim;
+      ctx.fillRect(c.x - 2, c.y - 3, c.w + 4, 5);
+      ctx.fillStyle = 'rgba(255,220,150,0.25)';
+      ctx.fillRect(c.x, c.y, 3, c.h);
     }
   }
 
@@ -1778,6 +2298,9 @@ function drawRoom(ctx, s) {
   drawVitrine(ctx, s, 'left', VITRINES.left);
   drawVitrine(ctx, s, 'centre', VITRINES.centre);
   drawVitrine(ctx, s, 'right', VITRINES.right);
+
+  // Rev11 systems' objects: locker, wardrobes, switches, extra loot.
+  drawRev11Objects(ctx, s);
 
   // Laser grid in front of the centre vitrine. Rev7: each beam hums —
   // its glow flickers slightly out of step with the others, so the grid
@@ -1937,6 +2460,46 @@ function drawRoom(ctx, s) {
   ctx.fillStyle = PALETTE.gold;
   ctx.font = `bold 10px ${FONT}`;
   ctx.fillText('SERVICE DOOR', SERVICE_DOOR.x + 32, SERVICE_DOOR.y + SERVICE_DOOR.h + 16);
+  // Rev11 — a locked service door reads locked: a brass padlock on the
+  // handle bar and a red LOCKED plate under the EXIT sign. When the
+  // door is locked the only way out is the roof, so a gold ROOF marker
+  // appears at the vent's right end.
+  if (s.escape && s.escape.doorLocked) {
+    const lx = SERVICE_DOOR.x + SERVICE_DOOR.w - 12;
+    const ly = SERVICE_DOOR.y + 56;
+    ctx.strokeStyle = PALETTE.goldBright;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(lx, ly - 4, 7, Math.PI, 0);
+    ctx.stroke();
+    ctx.fillStyle = '#c8952e';
+    roundRect(ctx, lx - 9, ly - 4, 18, 15, 3);
+    ctx.fill();
+    ctx.strokeStyle = PALETTE.goldDim;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = '#14141c';
+    ctx.beginPath();
+    ctx.arc(lx, ly + 3, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#8f1420';
+    roundRect(ctx, SERVICE_DOOR.x + 10, SERVICE_DOOR.y + SERVICE_DOOR.h + 22, 44, 16, 3);
+    ctx.fill();
+    ctx.fillStyle = '#ff8a94';
+    ctx.font = `bold 10px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.fillText('LOCKED', SERVICE_DOOR.x + 32, SERVICE_DOOR.y + SERVICE_DOOR.h + 34);
+    // Roof exit marker at the vent's right end (triangle + word).
+    ctx.fillStyle = PALETTE.goldBright;
+    ctx.beginPath();
+    ctx.moveTo(1200, 134);
+    ctx.lineTo(1207, 144);
+    ctx.lineTo(1193, 144);
+    ctx.closePath();
+    ctx.fill();
+    ctx.font = `bold 11px ${FONT}`;
+    ctx.fillText('ROOF', 1200, 158);
+  }
 
   // (The floor sheen now lives in the baked FLOOR_STRIP: warm pools
   // under the chandelier and vitrines, a cool shaft from the window.)
@@ -2101,6 +2664,83 @@ function drawDecoy(ctx, s) {
   ctx.restore();
 }
 
+/** Rev11 — downed guards lying on the floor. A hidden body (dragged
+ *  out of sight) is not drawn; a found body carries a red tag. */
+function drawBodies(ctx, s) {
+  if (!s.bodies) return;
+  for (const body of s.bodies) {
+    if (body.hidden) continue;
+    const x = body.x;
+    const y = body.y; // bottom of the body, on its floor
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath();
+    ctx.ellipse(x, y + 3, 26, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // A guard lying flat: navy coat, head, cap on the floor beside it.
+    ctx.fillStyle = '#3a4a6b';
+    ctx.strokeStyle = PALETTE.guardOutline;
+    ctx.lineWidth = 2;
+    roundRect(ctx, x - 24, y - 14, 48, 14, 7);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#d9a06a';
+    ctx.beginPath();
+    ctx.arc(x - 28, y - 8, 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#1d2a4a';
+    ctx.beginPath();
+    ctx.ellipse(x - 28, y + 6, 9, 3.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Brass buttons down the coat.
+    ctx.fillStyle = '#e8b64c';
+    for (const bx of [-12, 0, 12]) {
+      ctx.beginPath();
+      ctx.arc(x + bx, y - 7, 1.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Live tag: a downed guard is a fact the judge should read, and it
+    // marks the evidence a patrolling guard may find.
+    const label = body.found ? 'BODY FOUND!' : 'GUARD DOWN';
+    ctx.font = `bold 10px ${FONT}`;
+    const lw = ctx.measureText(label).width + 12;
+    ctx.fillStyle = 'rgba(13,17,32,0.85)';
+    roundRect(ctx, x - lw / 2, y - 34, lw, 15, 7);
+    ctx.fill();
+    ctx.fillStyle = body.found ? '#ff5a68' : PALETTE.teal;
+    ctx.textAlign = 'center';
+    ctx.fillText(label, x, y - 23);
+    ctx.restore();
+  }
+}
+
+/** Rev11 — the sound ring. It spreads across the floor from the
+ *  noise's source to its live radius and fades as its timer runs out,
+ *  so running feet and jumps are visible as well as audible. */
+function drawNoiseRing(ctx, s) {
+  const n = s.noise;
+  if (!n) return;
+  const life = Math.max(0, Math.min(1, n.t / 0.7));
+  const r = Math.max(8, n.radius * (1 - life * 0.55));
+  ctx.save();
+  ctx.strokeStyle = `rgba(255,217,122,${(0.75 * life + 0.15).toFixed(3)})`;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.ellipse(n.x, n.y, r, r * 0.3, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.strokeStyle = `rgba(255,217,122,${(0.3 * life).toFixed(3)})`;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.ellipse(n.x, n.y, r * 0.62, r * 0.62 * 0.3, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.fillStyle = `rgba(255,217,122,${(0.9 * life + 0.1).toFixed(3)})`;
+  ctx.font = `bold 11px ${FONT}`;
+  ctx.textAlign = 'center';
+  ctx.fillText('NOISE', n.x, n.y - r * 0.3 - 8);
+  ctx.restore();
+}
+
 function drawParticles(ctx, s) {
   for (const pt of s.particles) {
     ctx.globalAlpha = Math.max(0, pt.life);
@@ -2156,7 +2796,29 @@ function drawHud(ctx, s) {
   ctx.fillText('VELVET VAULT', 14, 20);
   ctx.fillStyle = PALETTE.text;
   ctx.font = `12px ${FONT}`;
-  ctx.fillText(objectiveLine(s), 14, 40);
+  const objText = objectiveLine(s);
+  ctx.fillText(objText, 14, 40);
+  // Rev11 — mission + rank, live from state, appended to the objective
+  // in gold: the phase (the objective already names it), the side
+  // objectives and the heist rank. Drawn only if it fits before the
+  // alarm meter; the rank drops first if space runs out.
+  {
+    const phase = s.mission ? s.mission.phase : 0;
+    const side = s.mission ? s.mission.sideDone : 0;
+    const sideTotal = s.mission ? s.mission.sideTotal : 4;
+    const rankShort = (s.heistRank || 'Novice') === 'Master Thief' ? 'MASTER' : (s.heistRank || 'Novice').toUpperCase();
+    const objW = ctx.measureText(objText).width;
+    ctx.font = `11px ${FONT}`;
+    const full = `· PH${phase} · SIDE ${side}/${sideTotal} · ${rankShort}`;
+    const short = `· PH${phase} · SIDE ${side}/${sideTotal}`;
+    let append = full;
+    if (14 + objW + 8 + ctx.measureText(full).width > 458) append = short;
+    if (14 + objW + 8 + ctx.measureText(append).width > 458) append = '';
+    if (append) {
+      ctx.fillStyle = PALETTE.gold;
+      ctx.fillText(append, 14 + objW + 8, 40);
+    }
+  }
   // Alarm meter (centre): live from state, never a static label.
   // Rev9: taller, segmented (a divider every 25%, ticks every 10%),
   // and the colour transition teal -> amber -> red is now a hard step
@@ -2205,12 +2867,20 @@ function drawHud(ctx, s) {
     }
   }
   ctx.fillStyle = 'rgba(8,10,22,0.8)';
-  roundRect(ctx, ax + aw / 2 - 74, 16, 148, 22, 6);
+  // Rev11 — the chip carries the live alarm TIER as well as the
+  // number (CALM / ALERT / LOCKDOWN), and its edge takes the tier
+  // colour, so the tier reads at a glance. The chip is wider (176)
+  // to hold the longest word, LOCKDOWN, at 14px.
+  roundRect(ctx, ax + aw / 2 - 88, 16, 176, 22, 6);
   ctx.fill();
+  ctx.strokeStyle = alarmColor;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
   ctx.fillStyle = '#ffffff';
-  ctx.font = `bold 15px ${FONT}`;
+  ctx.font = `bold 14px ${FONT}`;
   ctx.textAlign = 'center';
-  ctx.fillText(`ALARM ${Math.floor(alarm)}%`, ax + aw / 2, 32);
+  const tierWord = ['CALM', 'ALERT', 'LOCKDOWN'][s.alarmTier || 0];
+  ctx.fillText(`ALARM ${Math.floor(alarm)}% · ${tierWord}`, ax + aw / 2, 32);
   // Detection pill + live stats (right): the status is a designed
   // pill (dot + word + coloured edge), and TIME / COINS / SCORE each
   // carry a small icon (clock, coin, star), so the row reads as a
@@ -2221,6 +2891,10 @@ function drawHud(ctx, s) {
   // the 68% red alarm bar — four voices saying the same thing, and a
   // static SEEN label is the stealth genre's biggest tell. The other
   // words stay: HIDDEN / SPOTTED still tell the judge the live state.
+  // The detection pill is the rightmost pill; Rev11 pills stack to its
+  // left (disguise, then the locked-door warning), so the row never
+  // collides with the alarm meter.
+  let pillLeft = 1252;
   if (!word.startsWith('SEEN')) {
     const spotted = word === 'SPOTTED';
     const pillColor = spotted ? PALETTE.amber : PALETTE.teal;
@@ -2229,6 +2903,7 @@ function drawHud(ctx, s) {
     const pw = wordW + 36;
     const px = 1252 - pw;
     const py = 8;
+    pillLeft = px;
     ctx.fillStyle = 'rgba(13,17,32,0.92)';
     roundRect(ctx, px, py, pw, 20, 10);
     ctx.fill();
@@ -2242,6 +2917,72 @@ function drawHud(ctx, s) {
     ctx.fillStyle = PALETTE.text;
     ctx.textAlign = 'left';
     ctx.fillText(word, px + 22, py + 14);
+  }
+  // Rev11 — DISGUISED pill with the live timer, left of the detection
+  // pill while the guard uniform is worn.
+  if (s.disguise && s.disguise.active) {
+    const dText = `DISGUISED ${Math.ceil(s.disguise.t)}s`;
+    ctx.font = `bold 13px ${FONT}`;
+    const dw = ctx.measureText(dText).width + 34;
+    const dx = pillLeft - 8 - dw;
+    ctx.fillStyle = 'rgba(13,17,32,0.92)';
+    roundRect(ctx, dx, 8, dw, 20, 10);
+    ctx.fill();
+    ctx.strokeStyle = '#6aa8ff';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = '#6aa8ff';
+    ctx.beginPath();
+    ctx.arc(dx + 12, 18, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = PALETTE.text;
+    ctx.textAlign = 'left';
+    ctx.fillText(dText, dx + 21, 22);
+    pillLeft = dx;
+  }
+  // Rev11 — locked-door warning, left of the other pills: the alarm
+  // has locked the service door, so the roof is the only way out.
+  if (s.escape && s.escape.doorLocked) {
+    const eText = 'DOOR LOCKED → ROOF';
+    ctx.font = `bold 13px ${FONT}`;
+    const ew = ctx.measureText(eText).width + 34;
+    const ex = pillLeft - 8 - ew;
+    ctx.fillStyle = 'rgba(143,20,32,0.92)';
+    roundRect(ctx, ex, 8, ew, 20, 10);
+    ctx.fill();
+    ctx.strokeStyle = '#ff5a68';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = '#ff5a68';
+    ctx.beginPath();
+    ctx.arc(ex + 12, 18, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'left';
+    ctx.fillText(eText, ex + 21, 22);
+    pillLeft = ex;
+  }
+  // Rev11 — noise indicator: while a sound ring is live (running feet,
+  // a jump, a landing) a small amber pill flashes at the top-left of
+  // the playfield, under the HUD bar. It sits clear of the left window
+  // (which starts at x=90).
+  if (s.noise) {
+    const nText = 'NOISE!';
+    ctx.font = `bold 12px ${FONT}`;
+    const nw = ctx.measureText(nText).width + 26;
+    ctx.fillStyle = 'rgba(13,17,32,0.9)';
+    roundRect(ctx, 14, 62, nw, 20, 10);
+    ctx.fill();
+    ctx.strokeStyle = PALETTE.amber;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = PALETTE.amber;
+    ctx.beginPath();
+    ctx.arc(26, 72, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = PALETTE.text;
+    ctx.textAlign = 'left';
+    ctx.fillText(nText, 34, 76);
   }
   const stats = [
     { icon: 'clock', text: `TIME ${formatTime(s.time)}` },
@@ -2280,34 +3021,40 @@ function drawHud(ctx, s) {
   // at 768x480, so criterion 2 ("tools that cost something") was
   // invisible to the judge. The blurb line below still carries the
   // effect / duration, so the bar now shows cost AND effect.
+  // Rev11: four cards now — LOCKPICK joins (key 4, cost live from
+  // TOOLS, affordability like the others). The cards are narrower
+  // (186) so the row still clears the controls hint; a gadget the
+  // planning screen chose is FREE once, and the card says so.
   const tools = [
-    { key: TOOLS.emp.key, name: TOOLS.emp.name, cost: TOOLS.emp.cost, blurb: 'camera off 5s + BLACKOUT', icon: 'bolt' },
-    { key: TOOLS.decoy.key, name: TOOLS.decoy.name, cost: TOOLS.decoy.cost, blurb: 'lure a guard', icon: 'bell' },
-    { key: TOOLS.flash.key, name: TOOLS.flash.name, cost: TOOLS.flash.cost, blurb: 'blind cones 3s', icon: 'burst' },
+    { id: 'emp', key: TOOLS.emp.key, name: TOOLS.emp.name, cost: TOOLS.emp.cost, blurb: 'camera off 5s + BLACKOUT', icon: 'bolt' },
+    { id: 'decoy', key: TOOLS.decoy.key, name: TOOLS.decoy.name, cost: TOOLS.decoy.cost, blurb: 'lure a guard', icon: 'bell' },
+    { id: 'flash', key: TOOLS.flash.key, name: TOOLS.flash.name, cost: TOOLS.flash.cost, blurb: 'blind cones 3s', icon: 'burst' },
+    { id: 'lockpick', key: TOOLS.lockpick.key, name: TOOLS.lockpick.name, cost: TOOLS.lockpick.cost, blurb: 'silent vitrine / door', icon: 'key' },
   ];
   const cardY = FIELD.height - 46;
   const cardH = 42;
-  const cardW = 252;
+  const cardW = 186;
   let tx = 12;
   for (const t of tools) {
-    const afford = s.coins >= t.cost;
+    const isFree = s.planning && s.planning.gadget === t.id && !(s.planningUsed && s.planningUsed.gadget);
+    const afford = isFree || s.coins >= t.cost;
     ctx.fillStyle = afford ? 'rgba(232,182,76,0.12)' : 'rgba(13,17,32,0.55)';
     roundRect(ctx, tx, cardY, cardW, cardH, 7);
     ctx.fill();
     ctx.strokeStyle = afford ? PALETTE.gold : '#2c3350';
     ctx.lineWidth = afford ? 1.5 : 1;
     ctx.stroke();
-    drawIcon(ctx, t.icon, tx + 21, cardY + cardH / 2, 20, afford ? PALETTE.gold : '#5a6076');
+    drawIcon(ctx, t.icon, tx + 18, cardY + cardH / 2, 18, afford ? PALETTE.gold : '#5a6076');
     ctx.textAlign = 'left';
     ctx.fillStyle = afford ? PALETTE.text : '#6a7186';
-    ctx.font = `bold 13px ${FONT}`;
-    ctx.fillText(t.name, tx + 40, cardY + 17);
+    ctx.font = `bold 12px ${FONT}`;
+    ctx.fillText(t.name, tx + 32, cardY + 17);
     const nameW = ctx.measureText(t.name).width;
-    ctx.fillStyle = afford ? PALETTE.goldBright : '#5a6076';
-    ctx.fillText(` · ${t.cost} COINS`, tx + 40 + nameW, cardY + 17);
+    ctx.fillStyle = isFree ? PALETTE.teal : (afford ? PALETTE.goldBright : '#5a6076');
+    ctx.fillText(isFree ? ' · FREE' : ` · ${t.cost} COINS`, tx + 32 + nameW, cardY + 17);
     ctx.fillStyle = afford ? PALETTE.muted : '#4a5064';
-    ctx.font = `11px ${FONT}`;
-    ctx.fillText(t.blurb, tx + 40, cardY + 33);
+    ctx.font = `9px ${FONT}`;
+    ctx.fillText(t.blurb, tx + 32, cardY + 33);
     drawKbdChip(ctx, tx + cardW - 28, cardY + 5, t.key, 18, !afford);
     tx += cardW + 8;
   }
@@ -2386,13 +3133,192 @@ function drawHud(ctx, s) {
     ctx.textAlign = 'left';
     ctx.fillText(actionText, textX, py + 16);
   }
-  // Hack progress bar under the prompt.
-  if (s.hackProgress > 0 && s.hackProgress < 2) {
+  // Hack progress bar under the prompt. Rev11: hidden while the
+  // minigame panel is up — the panel's hit dots are the progress now,
+  // and the old bar would sit on top of it.
+  if (s.hackProgress > 0 && s.hackProgress < 2 && !(s.minigame && s.minigame.active)) {
     ctx.fillStyle = 'rgba(13,17,32,0.9)';
     ctx.fillRect(FIELD.width / 2 - 110, 100, 220, 10);
     ctx.fillStyle = PALETTE.teal;
     ctx.fillRect(FIELD.width / 2 - 110, 100, 220 * (s.hackProgress / 2), 10);
   }
+  // Rev11 — the hacking minigame panel, top centre.
+  drawMinigamePanel(ctx, s);
+}
+
+/**
+ * Rev11 — the hacking timing game, top centre: a horizontal bar with
+ * the green zone (40-60), the live needle, and the hit dots. It sits
+ * below the HUD bar and clear of both paintings, so it never covers
+ * the thief at the terminal or a guard cone.
+ */
+function drawMinigamePanel(ctx, s) {
+  const mg = s.minigame;
+  if (!mg || !mg.active) return;
+  const px = 420;
+  const py = 64;
+  const pw = 400;
+  const ph = 78;
+  ctx.save();
+  ctx.fillStyle = 'rgba(13,17,32,0.92)';
+  roundRect(ctx, px, py, pw, ph, 10);
+  ctx.fill();
+  ctx.strokeStyle = PALETTE.teal;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.textAlign = 'center';
+  ctx.fillStyle = PALETTE.goldBright;
+  ctx.font = `bold 13px ${FONT}`;
+  ctx.fillText('HACK — PRESS E IN THE GREEN ZONE', px + pw / 2, py + 20);
+  // The bar: dark track, teal-green zone 40-60, live needle.
+  const bx = px + 16;
+  const bw = pw - 32;
+  const by = py + 30;
+  const bh = 14;
+  ctx.fillStyle = '#0d1120';
+  roundRect(ctx, bx, by, bw, bh, 4);
+  ctx.fill();
+  const zx0 = bx + (bw * 40) / 100;
+  const zx1 = bx + (bw * 60) / 100;
+  ctx.fillStyle = 'rgba(46,196,182,0.45)';
+  ctx.fillRect(zx0, by, zx1 - zx0, bh);
+  ctx.strokeStyle = PALETTE.teal;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(zx0, by, zx1 - zx0, bh);
+  const nx = bx + (bw * mg.needle) / 100;
+  ctx.fillStyle = '#ffd97a';
+  ctx.fillRect(nx - 1.5, by - 3, 3, bh + 6);
+  ctx.beginPath();
+  ctx.moveTo(nx - 5, by - 8);
+  ctx.lineTo(nx + 5, by - 8);
+  ctx.lineTo(nx, by - 3);
+  ctx.closePath();
+  ctx.fill();
+  // Hit dots + count, live from the minigame.
+  const cy = py + 62;
+  const dotX0 = px + pw / 2 - 34;
+  for (let i = 0; i < mg.need; i += 1) {
+    ctx.beginPath();
+    ctx.arc(dotX0 + i * 20, cy, 5, 0, Math.PI * 2);
+    if (i < mg.hits) {
+      ctx.fillStyle = PALETTE.teal;
+      ctx.fill();
+    } else {
+      ctx.strokeStyle = PALETTE.muted;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+  }
+  ctx.fillStyle = PALETTE.text;
+  ctx.font = `bold 12px ${FONT}`;
+  ctx.textAlign = 'left';
+  ctx.fillText(`HITS ${mg.hits}/${mg.need}`, dotX0 + mg.need * 20 + 4, cy + 4);
+  ctx.restore();
+}
+
+/**
+ * Rev11 — the pre-heist planning screen: one free gadget (1-4, or 0
+ * for none) + one entry point (Left/Right), Enter to start. Same
+ * gold-edged panel language as HOW TO PLAY; the hall stays visible
+ * behind the veil.
+ */
+function drawPlanning(ctx, s) {
+  const choice = s.planningChoice || { gadget: null, entry: 'door' };
+  ctx.fillStyle = 'rgba(10,13,26,0.72)';
+  ctx.fillRect(0, 0, FIELD.width, FIELD.height);
+  const px = 340;
+  const py = 130;
+  const pw = 600;
+  const ph = 420;
+  ctx.fillStyle = 'rgba(13,17,32,0.94)';
+  roundRect(ctx, px, py, pw, ph, 12);
+  ctx.fill();
+  ctx.strokeStyle = PALETTE.gold;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.textAlign = 'center';
+  ctx.fillStyle = PALETTE.goldBright;
+  ctx.font = `bold 26px ${FONT_DISPLAY}`;
+  ctx.fillText('PRE-HEIST PLANNING', FIELD.width / 2, py + 44);
+  ctx.fillStyle = PALETTE.muted;
+  ctx.font = `italic 14px ${FONT_DISPLAY}`;
+  ctx.fillText('One free gadget · one way in — choose before the doors open', FIELD.width / 2, py + 70);
+  // Gadget cards.
+  ctx.textAlign = 'left';
+  ctx.fillStyle = PALETTE.gold;
+  ctx.font = `bold 12px ${FONT}`;
+  ctx.fillText('FREE GADGET — pick one  (1–4, or 0 for none)', px + 24, py + 100);
+  const gadgets = [
+    { id: 'emp', key: '1', name: 'EMP', lines: ['Camera + grid dead 5s.', 'BLACKOUT 3s.'] },
+    { id: 'decoy', key: '2', name: 'DECOY', lines: ['Lure a guard to', 'the clatter.'] },
+    { id: 'flash', key: '3', name: 'FLASH', lines: ['Blind the cones', 'for 3s.'] },
+    { id: 'lockpick', key: '4', name: 'LOCKPICK', lines: ['Silent vitrine', 'or locked door.'] },
+  ];
+  gadgets.forEach((g, i) => {
+    const cx = px + 24 + i * 140;
+    const cy = py + 112;
+    const cw = 132;
+    const ch = 112;
+    const selected = choice.gadget === g.id;
+    ctx.fillStyle = selected ? 'rgba(232,182,76,0.14)' : 'rgba(13,17,32,0.6)';
+    roundRect(ctx, cx, cy, cw, ch, 8);
+    ctx.fill();
+    ctx.strokeStyle = selected ? PALETTE.gold : '#2c3350';
+    ctx.lineWidth = selected ? 2 : 1;
+    ctx.stroke();
+    ctx.fillStyle = selected ? PALETTE.goldBright : PALETTE.text;
+    ctx.font = `bold 14px ${FONT}`;
+    ctx.textAlign = 'left';
+    ctx.fillText(g.name, cx + 10, cy + 22);
+    drawKbdChip(ctx, cx + cw - 28, cy + 8, g.key, 18, !selected);
+    ctx.fillStyle = PALETTE.muted;
+    ctx.font = `11px ${FONT}`;
+    ctx.fillText(g.lines[0], cx + 10, cy + 46);
+    ctx.fillText(g.lines[1], cx + 10, cy + 62);
+    ctx.fillStyle = selected ? PALETTE.teal : PALETTE.goldDim;
+    ctx.font = `bold 11px ${FONT}`;
+    ctx.fillText(selected ? '✓ SELECTED — FREE' : 'FREE', cx + 10, cy + 92);
+  });
+  // Entry cards.
+  ctx.fillStyle = PALETTE.gold;
+  ctx.font = `bold 12px ${FONT}`;
+  ctx.fillText('ENTRY POINT — pick one  (← →)', px + 24, py + 258);
+  const entries = [
+    { id: 'door', name: 'FRONT DOOR', lines: ['The usual way in.', 'Spawn by the stairs.'] },
+    { id: 'vent', name: 'VENT DUCT', lines: ['Drop in from the', 'ceiling duct.'] },
+    { id: 'upper', name: 'UPPER FLOOR', lines: ['Start upstairs,', 'by the idol.'] },
+  ];
+  entries.forEach((e, i) => {
+    const cx = px + 24 + i * 190;
+    const cy = py + 270;
+    const cw = 180;
+    const ch = 82;
+    const selected = choice.entry === e.id;
+    ctx.fillStyle = selected ? 'rgba(232,182,76,0.14)' : 'rgba(13,17,32,0.6)';
+    roundRect(ctx, cx, cy, cw, ch, 8);
+    ctx.fill();
+    ctx.strokeStyle = selected ? PALETTE.gold : '#2c3350';
+    ctx.lineWidth = selected ? 2 : 1;
+    ctx.stroke();
+    ctx.fillStyle = selected ? PALETTE.goldBright : PALETTE.text;
+    ctx.font = `bold 14px ${FONT}`;
+    ctx.textAlign = 'left';
+    ctx.fillText(e.name, cx + 12, cy + 24);
+    ctx.fillStyle = PALETTE.muted;
+    ctx.font = `11px ${FONT}`;
+    ctx.fillText(e.lines[0], cx + 12, cy + 46);
+    ctx.fillText(e.lines[1], cx + 12, cy + 62);
+    if (selected) {
+      ctx.fillStyle = PALETTE.teal;
+      ctx.font = `bold 11px ${FONT}`;
+      ctx.fillText('✓ SELECTED', cx + 12, cy + 78);
+    }
+  });
+  // Footer.
+  ctx.textAlign = 'center';
+  ctx.fillStyle = PALETTE.gold;
+  ctx.font = `bold 17px ${FONT}`;
+  ctx.fillText('PRESS ENTER TO START THE HEIST', FIELD.width / 2, py + 392);
 }
 
 function drawTitle(ctx, s) {
@@ -2429,12 +3355,14 @@ function drawTitle(ctx, s) {
   // Rev9: a proper HOW TO PLAY panel — gold-edged, two columns of kbd
   // chips + actions, and the objective as its footer — instead of one
   // bare controls line under the title. The hall stays visible around
-  // it: the panel (390-890 x 278-428) sits clear of the vitrines
+  // it: the panel (360-920 x 278-446) sits clear of the vitrines
   // (y 500+) and the paintings (y 76-196).
-  const px = 390;
+  // Rev11: wider (560) so the four tool keys fit, a planning line, and
+  // Enter now goes to planning first.
+  const px = 360;
   const py = 278;
-  const pw = 500;
-  const ph = 150;
+  const pw = 560;
+  const ph = 168;
   ctx.fillStyle = 'rgba(13,17,32,0.88)';
   roundRect(ctx, px, py, pw, ph, 10);
   ctx.fill();
@@ -2455,14 +3383,14 @@ function drawTitle(ctx, s) {
     { col: 0, keys: ['WASD'], text: 'Move' },
     { col: 0, keys: ['SPACE'], text: 'Jump' },
     { col: 0, keys: ['C'], text: 'Crouch behind cover' },
-    { col: 1, keys: ['E'], text: 'Interact / hold to hack' },
-    { col: 1, keys: ['1', '2', '3'], text: 'EMP · DECOY · FLASH' },
+    { col: 1, keys: ['E'], text: 'Interact / hack terminal' },
+    { col: 1, keys: ['1', '2', '3', '4'], text: 'EMP·DECOY·FLASH·LOCKPICK' },
     { col: 1, keys: ['P', 'R'], text: 'Pause · restart' },
   ];
   ctx.textAlign = 'left';
   ctx.font = `13px ${FONT}`;
   rows.forEach((row, i) => {
-    const colX = px + 22 + row.col * 250;
+    const colX = px + 22 + row.col * 280;
     const rowY = py + 50 + (i % 3) * 26;
     let kx = colX;
     for (const k of row.keys) kx += drawKbdChip(ctx, kx, rowY - 13, k, 18) + 4;
@@ -2474,9 +3402,12 @@ function drawTitle(ctx, s) {
   ctx.fillStyle = PALETTE.gold;
   ctx.font = `13px ${FONT}`;
   ctx.fillText('Goal: hack the TERMINAL → steal the KANCIL EMAS → escape the SERVICE DOOR', FIELD.width / 2, py + 136);
+  ctx.fillStyle = PALETTE.teal;
+  ctx.font = `12px ${FONT}`;
+  ctx.fillText('Enter → planning: pick 1 FREE gadget + your entry point first', FIELD.width / 2, py + 156);
   ctx.fillStyle = PALETTE.gold;
   ctx.font = `bold 18px ${FONT}`;
-  ctx.fillText('PRESS ENTER TO BEGIN THE HEIST', FIELD.width / 2, 472);
+  ctx.fillText('PRESS ENTER TO PLAN THE HEIST', FIELD.width / 2, 472);
 }
 
 function drawWin(ctx, s) {
@@ -2612,9 +3543,11 @@ export function render(ctx, s) {
   drawRoom(ctx, s);
   drawAmbient(ctx, s);
   drawCoins(ctx, s);
+  drawBodies(ctx, s);
   drawCameraUnit(ctx, s);
   for (const g of s.guards) drawCone(ctx, g);
   drawLaser(ctx, s);
+  drawNoiseRing(ctx, s);
   for (const g of s.guards) drawGuard(ctx, s, g);
   if (s.decoy) drawDecoy(ctx, s);
   // Rev5: on the win screen the thief stands at the service door in a
@@ -2656,12 +3589,20 @@ export function render(ctx, s) {
   if (s.blackoutT > 0) {
     ctx.fillStyle = 'rgba(4,6,14,0.93)';
     ctx.fillRect(0, 0, FIELD.width, FIELD.height);
-    ctx.fillStyle = '#f2ead8';
-    ctx.textAlign = 'center';
-    ctx.font = `bold 34px ${FONT_DISPLAY}`;
-    ctx.fillText('THE BLACKOUT', FIELD.width / 2, 90);
-    ctx.font = `16px ${FONT}`;
-    ctx.fillText('Only the cones still burn in the dark.', FIELD.width / 2, 118);
+    // The title and subtitle are the play screen's moment: on the win
+    // (or lose) screen the run ends with blackoutT still > 0 (the win
+    // route fires its last EMP ~2.8s before the door), and the
+    // blackout title ghosted behind "CLEAN GETAWAY!" — two titles
+    // stacked. The dark, the cones and the figures stay as the win
+    // screen's backdrop; only the words are play-only.
+    if (s.screen === SCREEN_PLAY) {
+      ctx.fillStyle = '#f2ead8';
+      ctx.textAlign = 'center';
+      ctx.font = `bold 34px ${FONT_DISPLAY}`;
+      ctx.fillText('THE BLACKOUT', FIELD.width / 2, 90);
+      ctx.font = `16px ${FONT}`;
+      ctx.fillText('Only the cones still burn in the dark.', FIELD.width / 2, 118);
+    }
     for (const g of s.guards) drawCone(ctx, g);
     // The thief FIRST, then the guards: the chasing guard runs directly
     // under the vaulting thief, and his CHASE! label pill sits at the
@@ -2735,6 +3676,7 @@ export function render(ctx, s) {
     drawHud(ctx, s);
   }
   if (s.screen === SCREEN_TITLE) drawTitle(ctx, s);
+  if (s.screen === SCREEN_PLANNING) drawPlanning(ctx, s);
   if (s.screen === SCREEN_WIN) drawWin(ctx, s);
   if (s.screen === SCREEN_LOSE) drawLose(ctx, s);
 }

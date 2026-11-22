@@ -11,6 +11,8 @@ export function createInput() {
     useEmp: false,
     useDecoy: false,
     useFlash: false,
+    useLockpick: false,
+    clearGadget: false,
     pausePressed: false,
     restartPressed: false,
     confirmPressed: false,
@@ -29,9 +31,11 @@ const KEYMAP = {
   KeyC: 'crouch',
   KeyS: 'crouch',
   KeyE: 'interact',
+  Digit0: 'clearGadget',
   Digit1: 'useEmp',
   Digit2: 'useDecoy',
   Digit3: 'useFlash',
+  Digit4: 'useLockpick',
 };
 
 export function attachInput(input, target) {
@@ -65,6 +69,7 @@ export function clearEdgeFlags(input) {
   input.useEmp = false;
   input.useDecoy = false;
   input.useFlash = false;
+  input.useLockpick = false;
   input.pausePressed = false;
   input.restartPressed = false;
   input.confirmPressed = false;

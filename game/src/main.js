@@ -19,6 +19,21 @@ const params = new URLSearchParams(window.location.search);
 const shotName = params.get('shot');
 const seed = Number(params.get('seed') || '1') || 1;
 
+// Rev11 — pre-heist planning is its own screen, between the title and
+// the play: 'planning'. It is a plain string, not a world.js constant
+// (world.js is frozen for this package): the world only ever sees
+// SCREEN_TITLE / SCREEN_PLAY / SCREEN_WIN / SCREEN_LOSE, and main.js
+// owns the planning step in between.
+const SCREEN_PLANNING = 'planning';
+const ENTRY_ORDER = ['door', 'vent', 'upper'];
+
+/** The planning choice the player is making right now. */
+let planningChoice = { gadget: null, entry: 'door' };
+/** The choice the last started run used — R restarts with it. */
+let lastPlanning = { gadget: null, entry: 'door' };
+let prevPlanLeft = false;
+let prevPlanRight = false;
+
 const input = createInput();
 attachInput(input, window);
 
@@ -39,12 +54,37 @@ resize();
 function announce() {
   if (!statusEl) return;
   const lines = {
-    [SCREEN_TITLE]: 'Velvet Vault. Press Enter to begin the heist.',
+    [SCREEN_TITLE]: 'Velvet Vault. Press Enter to plan the heist.',
+    [SCREEN_PLANNING]: 'Pre-heist planning. Pick a free gadget and an entry point, then press Enter.',
     [SCREEN_PLAY]: 'Heist in progress.',
     [SCREEN_WIN]: `Clean getaway. Grade ${state.grade}, score ${state.score}.`,
     [SCREEN_LOSE]: state.loseReason === 'alarm' ? 'The alarm won.' : 'Caught by a guard.',
   };
   statusEl.textContent = lines[state.screen] || '';
+}
+
+/** One frame of planning input: digits pick the free gadget (0 = none),
+ *  Left/Right cycle the entry point. Edge-triggered: the use* flags are
+ *  one-shot (cleared by clearEdgeFlags after this frame), the arrows
+ *  are level-triggered so the previous frame's level is remembered. */
+function handlePlanningInput() {
+  if (input.useEmp) planningChoice.gadget = 'emp';
+  if (input.useDecoy) planningChoice.gadget = 'decoy';
+  if (input.useFlash) planningChoice.gadget = 'flash';
+  if (input.useLockpick) planningChoice.gadget = 'lockpick';
+  if (input.clearGadget) planningChoice.gadget = null;
+  if (input.left && !prevPlanLeft) {
+    const i = ENTRY_ORDER.indexOf(planningChoice.entry);
+    planningChoice.entry = ENTRY_ORDER[(i + ENTRY_ORDER.length - 1) % ENTRY_ORDER.length];
+  }
+  if (input.right && !prevPlanRight) {
+    const i = ENTRY_ORDER.indexOf(planningChoice.entry);
+    planningChoice.entry = ENTRY_ORDER[(i + 1) % ENTRY_ORDER.length];
+  }
+  prevPlanLeft = input.left;
+  prevPlanRight = input.right;
+  // The renderer reads the choice off the state.
+  state.planningChoice = planningChoice;
 }
 
 if (shotName) {
@@ -88,7 +128,9 @@ if (shotName) {
     accumulator += elapsed;
 
     if (input.restartPressed) {
-      startGame(state);
+      // R restarts with the SAME planning choice (not back to title).
+      startGame(state, lastPlanning);
+      state.planningChoice = planningChoice;
       paused = false;
       input.restartPressed = false;
     }
@@ -97,9 +139,22 @@ if (shotName) {
       input.pausePressed = false;
     }
     if (input.confirmPressed) {
-      if (state.screen === SCREEN_TITLE) startGame(state);
+      // Title -> planning -> play. Starting from planning must clear
+      // the one-shot tool flags first: the '1' that picked the EMP
+      // gadget is still set this frame, and update() would fire the
+      // EMP at spawn if it survived into the first play step.
+      if (state.screen === SCREEN_TITLE) {
+        state.screen = SCREEN_PLANNING;
+        state.planningChoice = planningChoice;
+      } else if (state.screen === SCREEN_PLANNING) {
+        startGame(state, planningChoice);
+        lastPlanning = { ...planningChoice };
+        state.planningChoice = planningChoice;
+        clearEdgeFlags(input);
+      }
       input.confirmPressed = false;
     }
+    if (state.screen === SCREEN_PLANNING) handlePlanningInput();
 
     if (!paused && state.screen === SCREEN_PLAY) {
       while (accumulator >= STEP) {

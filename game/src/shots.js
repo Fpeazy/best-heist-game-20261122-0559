@@ -1,27 +1,28 @@
 // The screenshot scenes behind ?shot=title|stealth|alert|win.
 // Each one plays the REAL rules forward from a fresh world (seed 1) for a
 // fixed script of moves, driven by a small waypoint controller that uses
-// the same input the player does — walk, jump over cover, hold E to hack,
-// press E to take loot, spend coins on tools — so the frame is what a
-// real game looks like and the same seed always gives the same frame.
-// Every number the HUD shows in a shot (alarm %, timer, grade, score)
-// is the live state at the freeze, never typed in by hand.
+// the same input the player does — walk, jump over cover, press E to open
+// the hacking minigame and stop its needle, spend coins on tools — so the
+// frame is what a real game looks like and the same seed always gives the
+// same frame. Every number the HUD shows in a shot (alarm %, timer, grade,
+// score) is the live state at the freeze, never typed in by hand.
 //
-// The win scene plays the LONG heist, not a floor sprint: it waits out
-// the floor guard behind a crate, EMPs the camera, hacks the terminal,
-// takes both side vitrines, climbs the balcony staircase, waits behind
-// a plinth while the balcony guard passes, climbs the vent stairs,
-// crawls the vent duct, drops behind the centre vitrine, takes the
-// Kancil Emas and EMPs once more for the final sprint to the service
-// door. The timer on the win screen is the real time that run took.
+// Rev11: the layout is two storeys now (ground hall + upper floor +
+// vent), and the hack is the timing minigame (E opens it, E stops the
+// needle in the green zone, 3 hits). The win route is the package-M
+// route: wait out the floor guard behind the crate, EMP the camera,
+// hack the terminal, cross the upper floor for all four side loot,
+// drop to the ground floor, EMP + FLASH for the final sprint to the
+// service door. The timer on the win screen is the real time that run
+// took.
 import { COVER, STEP } from './config.js';
-import { SCREEN_PLAY, SCREEN_TITLE, newWorld, update } from './world.js';
+import { SCREEN_PLAY, SCREEN_TITLE, newWorld, startGame, update } from './world.js';
 
 function blankInput() {
   return {
     left: false, right: false, jump: false, crouch: false,
     interact: false, interactPressed: false,
-    useEmp: false, useDecoy: false, useFlash: false,
+    useEmp: false, useDecoy: false, useFlash: false, useLockpick: false,
     pausePressed: false, restartPressed: false, confirmPressed: false,
   };
 }
@@ -118,8 +119,10 @@ function climbStep(state, wp, plan) {
 
 /**
  * One step of the waypoint controller. `plan` is a list of waypoints:
- * { x, y?, action?: 'take' | 'hack' | 'wait' | 'hold' | 'emp' |
- * 'flash' | 'decoy' | 'climbBalcony' | 'climbVent', seconds?: number }.
+ * { x, y?, action?: 'take' | 'hack' | 'openHack' | 'wait' | 'hold' |
+ * 'sneak' | 'waitGuardLeft' | 'waitGuardRight' | 'waitAlarm' | 'pace' |
+ * 'emp' | 'flash' | 'decoy' | 'climbBalcony' |
+ * 'climbVent', seconds?: number, alarm?: number }.
  * Returns the input for this step; advances the plan when a waypoint is
  * reached (or its action is done). The thief jumps when a solid block
  * stands in the way ahead.
@@ -142,6 +145,25 @@ export function drive(state, plan, step) {
     return climbStep(state, current, plan);
   }
 
+  // 'waitAlarm' / 'waitChase' are used by the alert shot; see buildShot.
+
+  // 'pace' walks back and forth between current.x and current.x1 and
+  // never shifts off the plan (the caller stops the run): the thief
+  // stays between the two crates (430 and 760) so the floor guard
+  // keeps a clear line of sight while his suspicion fills, and keeps
+  // moving so the guard cannot close to catch range before the chase
+  // triggers. Running left past the crate at 430 shields the thief
+  // and suspicion decays before it hits 100; standing still lets the
+  // guard walk up adjacent. It runs before the arrived gate, which
+  // would otherwise drag the thief back to current.x.
+  if (current.action === 'pace') {
+    if (current.target === undefined) current.target = current.x1 ?? current.x;
+    if (Math.abs(centre - current.target) <= 12) {
+      current.target = current.target === current.x ? (current.x1 ?? current.x) : current.x;
+    }
+    return moveToward(state, input, current.target - centre);
+  }
+
   // A waypoint with a y is only "arrived" on the right level too.
   const arrived = Math.abs(centre - current.x) <= 12
     && (current.y === undefined || Math.abs(bottom - current.y) <= 30);
@@ -161,6 +183,13 @@ export function drive(state, plan, step) {
   // Action waypoints: walk to the spot first, then do the action.
   if (current.action) {
     if (!arrived) {
+      // 'sneak' crouch-walks to the spot (the crate jump still works:
+      // moveToward jumps solid cover ahead, crouched or not).
+      if (current.action === 'sneak') {
+        const r = moveToward(state, input, current.x - centre);
+        r.input.crouch = true;
+        return r;
+      }
       return moveToward(state, input, current.x - centre);
     }
     if (current.action === 'wait') {
@@ -175,9 +204,57 @@ export function drive(state, plan, step) {
       if (current.left <= 0) plan.shift();
       return { input, done: false };
     }
+    if (current.action === 'sneak') {
+      plan.shift();
+      return { input, done: false };
+    }
+    if (current.action === 'waitAlarm') {
+      // Stand still until the live alarm meter reaches current.alarm
+      // (the camera's lock-ons do the work, +25% each). A 30s timeout
+      // keeps a missed beam from hanging the run.
+      current.left = (current.left ?? 30) - STEP;
+      if (state.alarm >= (current.alarm ?? 50) || current.left <= 0) plan.shift();
+      return { input, done: false };
+    }
+    if (current.action === 'waitGuardLeft' || current.action === 'waitGuardRight') {
+      // Crouch behind cover until the floor guard turns at an end of
+      // his patrol: 'Left' = at the right end (x~740) turning left,
+      // 'Right' = at the left end (x~520) turning right. A 40s
+      // timeout keeps a missed phase from hanging the run.
+      input.crouch = true;
+      current.left = (current.left ?? 40) - STEP;
+      const g = state.guards[0];
+      const gc = g.x + 19;
+      const ok = current.action === 'waitGuardLeft'
+        ? (gc >= 715 && g.facing === -1 && g.state === 'patrol')
+        : (gc <= 545 && g.facing === 1 && g.state === 'patrol');
+      if (ok || current.left <= 0) plan.shift();
+      return { input, done: false };
+    }
+    if (current.action === 'openHack') {
+      // Press E once to open the minigame, then move on: the caller
+      // freezes the frame on the needle, it does not play the game.
+      if (state.minigame && state.minigame.active) { plan.shift(); return { input, done: false }; }
+      input.interactPressed = true;
+      return { input, done: false };
+    }
     if (current.action === 'hack') {
+      // Play the hacking minigame for real: E opens it, then E stops
+      // the needle once per green-zone visit (the flag clears when the
+      // needle leaves the zone, so a visit can only fire one press).
+      // Three green hits hack the terminal.
       if (state.terminalHacked) { plan.shift(); return { input, done: false }; }
-      input.interact = true;
+      if (!state.minigame || !state.minigame.active) {
+        input.interactPressed = true;
+        return { input, done: false };
+      }
+      const needle = state.minigame.needle;
+      if (needle >= 44 && needle <= 56 && !current.pressedInZone) {
+        input.interactPressed = true;
+        current.pressedInZone = true;
+      } else if (needle < 40 || needle > 60) {
+        current.pressedInZone = false;
+      }
       return { input, done: false };
     }
     if (current.action === 'take') {
@@ -284,141 +361,151 @@ export function buildShot(name) {
   }
 
   if (name === 'stealth') {
-    // Walk in, grab the first coin, then crouch snug against the floor
-    // crate's left edge while the guard's amber cone sweeps in from
-    // the right, cut short by the crate. Alarm here is only the slow
-    // creep: ~16s of play, so ~8%.
-    // Rev4: the freeze no longer steps out into the open gap between
-    // the crate (ends 492) and the centre vitrine (starts 600) — there
-    // the thief crouched in open floor while the crate beside him was
-    // labelled COVER, a contradiction the judge catches without a
-    // playtest. Now the freeze IS the wait spot: the thief (px ~378,
-    // crouched, whole) sits 12px left of the crate, and the crate
-    // stands between him and the guard's cone — the cone's rays hit
-    // the crate face and stop, suspicion stays 0 through the whole
-    // wait. The wait is 15s, not 21, so the freeze lands mid leftward
-    // sweep (guard centre ~665 at t=16.27, facing left, cone visibly
-    // ending at the crate) instead of at the far end facing away.
+    // The rev11 stealth frame shows a NEW system in action: the thief
+    // at the security terminal, mid-hack, the minigame panel open with
+    // its needle inside the green zone. The route in is the win
+    // route's opening (wait behind the crate until the floor guard
+    // turns left at 740, EMP at 580, walk to the terminal) so the
+    // thief arrives unseen; the freeze lands with the needle at
+    // 50-55, just after the blackout ends, so the panel and the hall
+    // both read. The EMP is paid (3 coins: 240, 540, 580).
     const plan = [
       { x: 250 },
-      { x: 410 },
-      { x: 410, action: 'wait', seconds: 15 },
+      { x: 350, action: 'waitGuardLeft' },
+      { x: 540 },
+      { x: 580, action: 'emp' },
+      { x: 1100 },
+      { x: 1100, action: 'openHack' },
     ];
-    stepWorld(state, plan, 40 / STEP);
-    // Freeze crouched at the wait spot (the plan empties the moment
-    // the wait ends; the staged pose is the crouch).
-    state.player.crouch = true;
-    state.player.height = 36;
-    state.player.y = 620 - 36;
+    stepWorld(state, plan, 60 / STEP);
+    // Freeze the moment the needle sits mid-green (50-55): the panel
+    // shows a live needle inside the zone, hits 0/3, and the blackout
+    // (3s from the EMP) has just ended, so the hall is lit again.
+    stepWorld(state, [], 3 / STEP, (s) => s.minigame && s.minigame.active
+      && s.minigame.needle >= 50 && s.minigame.needle <= 55);
     return state;
   }
 
   if (name === 'alert') {
-    // Walk into the open in front of the floor guard and stand there.
-    // The cone fills suspicion, the chase starts (+15%), the red laser
-    // sweeps across the thief (+25%). Freeze the moment the live alarm
-    // meter crosses 66%.
-    // Rev8: the freeze is the BLACKOUT, not the chase alone. The thief
-    // fires the EMP mid-chase (3 coins in hand: 250, 540, 580), then
-    // runs RIGHT for ~1s and the frame freezes ~1s into the blackout
-    // (blackoutT ~2) with the guard still CHASE. Direction matters:
-    // at the EMP the guard is LEFT of the thief (gap ~86px) and closes
-    // at 305 px/s, so walking left runs INTO him (caught in ~0.15s,
-    // flipping him to 'search' and killing the red chase cone) and
-    // standing still is caught in ~0.28s. Running right, the gap only
-    // closes at 40 px/s; the thief leaps the statue mid-flight (the
-    // guard runs under him — the catch check needs vertical overlap
-    // too) and lands by the terminal with the chase still live.
-    const plan = [{ x: 800 }, { x: 800, action: 'hold', seconds: 60 }];
-    stepWorld(state, plan, 60 / STEP, (s) => s.alarm >= 66);
-    stepWorld(state, [{ x: 800, action: 'emp' }], 5 / STEP);
-    // 55 steps (~0.93s, blackoutT ~2.05): the thief vaults the statue
-    // while the guard runs underneath him. The catch check needs
-    // vertical overlap (|dy| < 46) as well as horizontal, so the thief
-    // is safe while airborne over the statue (|dy| 61-106 at steps
-    // 30-55) — but at step 60 he has dropped to |dy| 34 with the
-    // guard directly below and the staged catch flips the guard to
-    // 'search'. 55 steps is the last safe step of the window, and the
-    // closest to "1s into the blackout". Deterministic (seed 1), so
-    // the window is exact, not a race.
-    stepWorld(state, [{ x: 1160 }], 55);
+    // The alarm is earned honestly, but NOT by kiting the floor guard.
+    // Kiting was tried three ways and every one ends the same way:
+    // the thief cannot outrun a chasing guard (265 vs 305), so any
+    // flee ends with the guard adjacent to a standing thief, and the
+    // staged catch then flips chase<->search every step (+1 detection
+    // and +15% alarm per step — 3227 detections for a still hold,
+    // 6076 for a flee to 860, 7235 for a flee to 400). The crate at
+    // 430 cannot break a chase either: the guard walks through it and
+    // keeps seeing the thief from the other side. So the alarm is
+    // driven by the CAMERA instead: the thief stands at 860, where the
+    // camera's beam reaches him but the crate at 760 blocks the floor
+    // guard's line of sight (14 lock-ons, 0 chases, measured; hits
+    // ~4.4s apart). Two lock-ons (+25% each) plus creep put the meter
+    // near 54% — the rest is two laser-grid crossings (+10% each,
+    // the thief really does cross the beams) and the chase itself
+    // (+15%), so the freeze lands near 92% (tier 2 LOCKDOWN). Then
+    // the thief walks into the guard's lane at 700 and PACES between
+    // the crates (520-740): running at full speed is loud, so the
+    // guard investigates the noise and follows it, and pacing keeps
+    // the thief between the crates — visible, never shielded — while
+    // his suspicion fills. The lane is the widest that stays clear
+    // of both crates (the thief's body at centre 520 is [500,540],
+    // at 740 it is [720,760]). Running left past the crate at 430
+    // shields the thief and suspicion decays before it hits 100 (that
+    // attempt ended with the guard back on patrol); crouch-walking
+    // away does not work either (130px/s against a suspect guard at
+    // ~121px/s barely grows the gap, and crossing the crate at 760
+    // cuts the line of sight). The pace triggers the chase with the
+    // guard ~129px behind the thief (a 100px lane only leaves ~29px
+    // — the guard's centre is p.x+19, the thief's p.x+20 — and the
+    // guard closes to catch range during the EMP step). The run stops
+    // at the chase trigger; the EMP fires where the thief stands and
+    // he keeps running away from the guard, so the guard (closing
+    // 40px/s) cannot reach catch range before the freeze.
+    const plan = [
+      { x: 860 },
+      { x: 860, action: 'waitAlarm', alarm: 50 },
+      { x: 700 },
+      { x: 520, x1: 740, action: 'pace' },
+    ];
+    stepWorld(state, plan, 60 / STEP, (s) => s.alarm >= 66 && s.guards[0].state === 'chase');
+    const cx = Math.round(state.player.x + state.player.width / 2);
+    const gx = Math.round(state.guards[0].x + 19);
+    const dir = cx < gx ? -1 : 1; // keep running away from the guard
+    stepWorld(state, [{ x: cx, action: 'emp' }], 5 / STEP);
+    stepWorld(state, [{ x: cx + dir * 200 }], 20);
     return state;
   }
 
   if (name === 'win') {
-    // The full heist, all three routes: wait out the floor guard, EMP
-    // the camera, hack the terminal, take both side vitrines, climb the
-    // balcony, wait behind a plinth while its guard passes, climb the
-    // vent stairs, crawl the vent duct, drop behind the centre vitrine,
-    // take the Kancil Emas, EMP once more for the sprint to the service
-    // door. The timer, alarm, score and grade on the win screen are
-    // computed from this very run — nothing is typed in. The run is
-    // built to finish unseen (0 detections) so the Grade S on the
-    // screen agrees with the "never saw a thing" line and the
-    // TIMES SPOTTED 0 row.
+    // The full heist on the two-storey layout (package-M route): wait
+    // out the floor guard behind the crate, EMP the camera, hack the
+    // terminal through the minigame, cross the upper floor for all
+    // four side loot, drop to the ground floor, EMP + FLASH for the
+    // final sprint to the service door. The timer, alarm, score and
+    // grade on the win screen are computed from this very run —
+    // nothing is typed in. The run is built to finish unseen
+    // (0 detections) so the Grade S on the screen agrees with the
+    // "never saw a thing" line and the TIMES SPOTTED 0 row.
+    // The run starts with the EMP as its free planning gadget: the
+    // first FLASH (upstairs, at the idol) costs 2 coins, and paying
+    // for the first EMP too would leave the thief 1 coin short.
+    startGame(state, { gadget: 'emp', entry: 'door' });
+    state.staged = true;
+    state.screen = SCREEN_PLAY;
     const plan = [
       { x: 250 },
-      // Wait at 350, not 410: 410 puts the thief against the crate, so
-      // the jump over it starts too late, lands past it, and sails over
-      // the coin at 540. From 350 the jump lands on the crate and the
-      // thief walks off it onto the coin. The crate still shields the
-      // thief from the floor guard's cone while waiting. 22s, so the
-      // terminal hack lands late enough that its 25s camera blackout
-      // still covers the vent crawl at the end of the route.
-      { x: 350, action: 'wait', seconds: 22 },
+      // Wait behind the crate until the floor guard turns left at the
+      // right end of his patrol: the crate shields the thief from the
+      // guard's cone while waiting.
+      { x: 350, action: 'waitGuardLeft' },
       // Floor coins at 540 and 580 (see config): the thief walks both
-      // on the floor, so the EMP below fires with 3 coins in hand.
-      // The EMP fires AT 580, before the thief walks into the camera's
-      // floor zone (x>=795): EMPing at 990 meant crossing that zone
-      // with the camera live, and the beam caught the thief mid-jump
-      // over the statue.
+      // on the floor, so the EMP below fires with the planning gadget
+      // free. The EMP fires AT 580, before the thief walks into the
+      // camera's floor zone (x>=795): EMPing at 990 meant crossing
+      // that zone with the camera live, and the beam caught the thief
+      // mid-jump over the statue.
       { x: 540 },
       { x: 580, action: 'emp' },
-      { x: 1025, action: 'take' },
+      // Hack the terminal through the minigame: 3 green-zone hits.
       { x: 1100, action: 'hack' },
-      { x: 365, action: 'take' },
+      // Wait at the terminal until the floor guard turns right at the
+      // left end of his patrol, so the crouch-walk back crosses his
+      // lane while he walks away to the right.
+      { x: 1100, action: 'waitGuardRight' },
+      // Crouch-walk to the left staircase (jumping the crate at 760
+      // on the way), then climb to the upper floor.
+      { x: 92, action: 'sneak' },
       { action: 'climbBalcony' },
-      { x: 150, y: 416 },
-      { x: 340, y: 416 },
-      // Wait at 520, not 470: 470 sits just past the plinth (400-456),
-      // and a thief who lands on the plinth while jumping it ends up
-      // centred on 470 but a level too high — the driver then oscillates
-      // on top of the plinth and the balcony guard spots them. At 520
-      // the approach direction (right) is also the way off the plinth,
-      // so the thief always ends the wait on the balcony, shielded by
-      // the plinth from the guard's cone.
-      // 6s here (the long wait moved to the crate, above) so the vent
-      // crawl still lands inside the hack's camera blackout.
-      { x: 520, y: 440, action: 'wait', seconds: 6 },
-      { action: 'climbVent' },
-      { x: 800, y: 168 },
-      // Rev5: 3s here, not 5 (and not 2). The freeze must land while the
-      // floor guard pauses at the LEFT end of his patrol, facing left,
-      // cone pointing out of the frame's centre toward the left wall.
-      // At 2s the freeze landed at t≈53.2 with the guard SUSPECT at
-      // x=840 facing right: the thief had crossed the floor while the
-      // guard still paused at the right end facing right, so the thief
-      // walked into the right-pointing cone (740-1005) and suspicion
-      // rose. One second later the crossing starts after the guard has
-      // begun his leftward leg, and the thief — much faster, walking
-      // left from 1220 to 660 — stays to the RIGHT of the guard the
-      // whole way, outside the left-pointing cone, so no suspicion
-      // rises at all; the freeze lands at t≈54.2 with the guard
-      // pausing at x=520, facing left. The camera is still dead from
-      // the hack at this point, so the frame keeps CAMERA OFF.
-      { x: 900, y: 168, action: 'wait', seconds: 3 },
-      { x: 1120, y: 168 },
-      // Crawl to the vent's right end and drop there: dropping off the
-      // left end (700) lands the thief on the vent stairs, where the
-      // driver oscillates between the step tops and the floor and never
-      // reaches the vitrine. The right end drops clean onto the floor
-      // by the service door.
-      { x: 1260, y: 168 },
-      { x: 1260 },
-      { x: 1220, action: 'emp' },
+      // Upper floor, left to right: coin at 150, FLASH to blind the
+      // upper guard, idol at 165, coin at 340, gold bar, vase, tiara.
+      { x: 150 },
+      { x: 150, action: 'flash' },
+      { x: 165, action: 'take' },
+      { x: 340 },
+      { x: 885, action: 'take' },
+      { x: 1002, action: 'take' },
+      { x: 1115, action: 'take' },
+      // Walk off the slab's right edge and drop to the ground floor,
+      // then run left to the Kancil's vitrine. The waypoint carries
+      // y:620 on purpose: a bare {x:1230} completes while the thief
+      // still stands ON the slab (centre 1201 is within 12 of 1230),
+      // and the whole rest of the route then plays out upstairs. With
+      // y:620 the driver only counts the waypoint once the thief has
+      // actually dropped to the ground floor.
+      { x: 1260, y: 620 },
+      { x: 750 },
+      // FLASH + EMP for the final stretch: the floor guard is blind
+      // for 3s and the camera is dead for 5s.
+      { x: 750, action: 'flash' },
+      { x: 750, action: 'emp' },
+      // Crouch to the Kancil, take it, sprint to the service door.
+      // y:620 on the last waypoint is the same safety net as the drop:
+      // the win fires during the sprint, but if anything went wrong
+      // upstairs the driver would walk off the slab instead of
+      // completing the route on the wrong floor.
+      { x: 660, action: 'sneak' },
       { x: 660, action: 'take' },
-      { x: 1160 },
-      { x: 1210 },
+      { x: 1210, y: 620 },
     ];
     stepWorld(state, plan, 120 / STEP);
     // Rev5: the freeze is the win moment, not the walk that got there.
