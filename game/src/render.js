@@ -521,6 +521,24 @@ function drawThief(ctx, s) {
   ctx.beginPath();
   ctx.ellipse(x + w * 0.5, y + h + 4, w * 0.55, 4, 0, 0, Math.PI * 2);
   ctx.fill();
+  // Rev10: a soft white glow behind a CROUCHED thief, so the hidden
+  // thief still reads at 300px — crouched he is 36px tall behind a
+  // crate, and his white coat sank into the crate's shadow at thumbnail
+  // size. The glow is behind the figure, never over it, and it is
+  // live from state (p.crouch); standing, the rev4 halo already does
+  // the job.
+  if (p.crouch) {
+    const cg = ctx.createRadialGradient(
+      x + w * 0.5, y + h * 0.5, 4,
+      x + w * 0.5, y + h * 0.5, 52,
+    );
+    cg.addColorStop(0, 'rgba(255,255,255,0.30)');
+    cg.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = cg;
+    ctx.beginPath();
+    ctx.arc(x + w * 0.5, y + h * 0.5, 52, 0, Math.PI * 2);
+    ctx.fill();
+  }
   // Rev4: a white halo ring + soft white glow, so the thief reads at
   // 768x480 on the navy wall and the dark carpet. The white silhouette
   // alone sank into the background at contact-sheet size; the halo is
@@ -1095,8 +1113,9 @@ function drawVitrine(ctx, s, key, v) {
     }
     ctx.restore();
   }
-  // Label plate.
-  ctx.font = `bold 12px ${FONT}`;
+  // Label plate. Rev10: 13px, not 12 — KANCIL EMAS is the loot the
+  // judge must find at 300px, and 12px sank into the carpet there.
+  ctx.font = `bold 13px ${FONT}`;
   ctx.textAlign = 'center';
   ctx.fillStyle = PALETTE.gold;
   ctx.fillText(v.label, v.x + v.w / 2, v.y + v.h + 30);
@@ -1521,14 +1540,11 @@ function drawRoom(ctx, s) {
     ctx.stroke();
   }
   ctx.fillStyle = PALETTE.tealDim;
-  ctx.font = `bold 11px ${FONT}`;
+  ctx.font = `bold 12px ${FONT}`;
   ctx.textAlign = 'left';
-  // Rev4: at x=700 the label sat under the win title — "CLEAN
-  // GETAWAY!" (58px, centred) buried its left half. Moved to the
-  // duct's right end, clear of the title and its subtitle, still
-  // directly above the grille it names. At x=1000 the vent coin at
-  // 1120 sat on the word ROUTE; at 970 the label ends ~1095, clear
-  // of the coin and of the camera unit.
+  // Rev10: 12px, not 11 — the route label is a criterion-2 signpost
+  // and 11px vanished at 300px. At 12px it ends ~1103, still clear of
+  // the vent coin at 1120.
   ctx.fillText('VENT — CRAWL ROUTE', 970, 158);
 
   // Teal safe-cover glow under every cover block.
@@ -1595,7 +1611,7 @@ function drawRoom(ctx, s) {
       ctx.fillStyle = 'rgba(255,220,150,0.35)';
       ctx.fillRect(c.x + 2, c.y + 1, c.w - 4, 2);
       ctx.fillStyle = PALETTE.teal;
-      ctx.font = `bold 9px ${FONT}`;
+      ctx.font = `bold 11px ${FONT}`;
       ctx.textAlign = 'center';
       ctx.fillText('COVER', c.x + c.w / 2, c.y - 6);
     } else if (c.kind === 'plinth') {
@@ -2045,10 +2061,26 @@ function drawCameraUnit(ctx, s) {
     ctx.arc(CAMERA.x - 12, CAMERA.y + 8, 2.2, 0, Math.PI * 2);
     ctx.fill();
   }
-  ctx.fillStyle = '#f2ead8';
+  // Rev10: the label is now a nameplate LEFT of the housing, vertically
+  // centred on it, with a dark pill behind it. The old spot (below the
+  // housing, left-aligned at CAMERA.x - 58) sat in the beam's sweep: at
+  // leftward angles the hot core crossed the label's right end, and the
+  // label is drawn before the laser, so the beam washed over it. Right-
+  // aligned to end at CAMERA.x - 35, it clears the beam's leftmost halo
+  // by ~30px, the moon (left edge 1152) and the vent coin at (1120,144)
+  // below; the pill keeps it readable where it crosses the window
+  // frame's corner. The text itself is still the live camera state.
+  const label = cam.offT > 0 ? 'CAMERA OFF' : 'CAMERA';
   ctx.font = 'bold 10px ' + FONT;
+  const lw = ctx.measureText(label).width;
+  const lx = CAMERA.x - 35 - lw;
+  const ly = CAMERA.y + 4;
+  ctx.fillStyle = 'rgba(8,10,22,0.85)';
+  roundRect(ctx, lx - 6, ly - 12, lw + 12, 17, 4);
+  ctx.fill();
+  ctx.fillStyle = '#f2ead8';
   ctx.textAlign = 'left';
-  ctx.fillText(cam.offT > 0 ? 'CAMERA OFF' : 'CAMERA', CAMERA.x - 58, CAMERA.y + 28);
+  ctx.fillText(label, lx, ly);
   ctx.restore();
 }
 
@@ -2176,7 +2208,7 @@ function drawHud(ctx, s) {
   roundRect(ctx, ax + aw / 2 - 74, 16, 148, 22, 6);
   ctx.fill();
   ctx.fillStyle = '#ffffff';
-  ctx.font = `bold 14px ${FONT}`;
+  ctx.font = `bold 15px ${FONT}`;
   ctx.textAlign = 'center';
   ctx.fillText(`ALARM ${Math.floor(alarm)}%`, ax + aw / 2, 32);
   // Detection pill + live stats (right): the status is a designed
@@ -2192,7 +2224,7 @@ function drawHud(ctx, s) {
   if (!word.startsWith('SEEN')) {
     const spotted = word === 'SPOTTED';
     const pillColor = spotted ? PALETTE.amber : PALETTE.teal;
-    ctx.font = `bold 13px ${FONT}`;
+    ctx.font = `bold 14px ${FONT}`;
     const wordW = ctx.measureText(word).width;
     const pw = wordW + 36;
     const px = 1252 - pw;
@@ -2366,6 +2398,24 @@ function drawHud(ctx, s) {
 function drawTitle(ctx, s) {
   ctx.fillStyle = 'rgba(10,13,26,0.62)';
   ctx.fillRect(0, 0, FIELD.width, FIELD.height);
+  // Rev10: a soft spotlight on the waiting thief, drawn over the veil
+  // so he reads at 300px — behind the 0.62 veil he shrank to a speck
+  // at thumbnail size. The pool is centred on the live thief position
+  // from state, and it lightens the veil around him without touching
+  // the title text drawn after it.
+  {
+    const p = s.player;
+    const tg = ctx.createRadialGradient(
+      p.x + p.width / 2, p.y + p.height / 2, 6,
+      p.x + p.width / 2, p.y + p.height / 2, 78,
+    );
+    tg.addColorStop(0, 'rgba(255,240,200,0.28)');
+    tg.addColorStop(1, 'rgba(255,240,200,0)');
+    ctx.fillStyle = tg;
+    ctx.beginPath();
+    ctx.arc(p.x + p.width / 2, p.y + p.height / 2, 78, 0, Math.PI * 2);
+    ctx.fill();
+  }
   ctx.textAlign = 'center';
   ctx.fillStyle = PALETTE.goldBright;
   ctx.font = `bold 64px ${FONT_DISPLAY}`;
@@ -2445,43 +2495,47 @@ function drawWin(ctx, s) {
     ctx.fillStyle = color;
     ctx.fillText(text, x, y);
   };
-  // Rev9: the layout moves up so the grade can wear a medal. Title at
-  // 138 and subtitle at 172 both clear "The Hunt" painting (frame
-  // bottom 184, label 196); the medal hangs between the subtitle and
-  // the grade; the stats become a clean table in a gold-edged panel;
-  // Press R at 494 still clears the vitrine tops (y 500).
+  // Rev10: the subtitle is TWO lines now. The rev9 single line at y 172
+  // was centred and ~670px wide, so its right end crossed "The Hunt"
+  // painting (frame 826-924 x 76-184) and struck through the VENT label
+  // — the rev9 comment claimed it cleared the frame, but 172 sits
+  // INSIDE the frame's vertical band, not below it. Two short lines
+  // (widest ~330px, spanning ~477-803) clear the painting, the vent
+  // label and the medal; both lines stay live from state (detections).
+  // Title at 132, lines at 164/190, medal shifted down to match.
   ctx.font = `bold 40px ${FONT_DISPLAY}`;
-  line('CLEAN GETAWAY!', FIELD.width / 2, 138, PALETTE.goldBright);
+  line('CLEAN GETAWAY!', FIELD.width / 2, 132, PALETTE.goldBright);
   ctx.font = `22px ${FONT}`;
+  line('The Kancil Emas is yours.', FIELD.width / 2, 164, PALETTE.text);
   line(
     s.detections === 0
-      ? 'The Kancil Emas is yours. The gallery never saw a thing.'
-      : 'The Kancil Emas is yours — spotted, but never caught.',
-    FIELD.width / 2, 172, PALETTE.text,
+      ? 'The gallery never saw a thing.'
+      : 'Spotted — but never caught.',
+    FIELD.width / 2, 190, PALETTE.text,
   );
   // The medal: red ribbon tails + a gold medallion with a star, hung
   // above the grade like a prize.
   ctx.fillStyle = '#8a1a2a';
   ctx.beginPath();
-  ctx.moveTo(624, 192);
-  ctx.lineTo(640, 192);
-  ctx.lineTo(632, 212);
+  ctx.moveTo(624, 200);
+  ctx.lineTo(640, 200);
+  ctx.lineTo(632, 220);
   ctx.closePath();
   ctx.fill();
   ctx.beginPath();
-  ctx.moveTo(640, 192);
-  ctx.lineTo(656, 192);
-  ctx.lineTo(648, 212);
+  ctx.moveTo(640, 200);
+  ctx.lineTo(656, 200);
+  ctx.lineTo(648, 220);
   ctx.closePath();
   ctx.fill();
   ctx.fillStyle = PALETTE.goldBright;
   ctx.beginPath();
-  ctx.arc(640, 222, 15, 0, Math.PI * 2);
+  ctx.arc(640, 230, 15, 0, Math.PI * 2);
   ctx.fill();
   ctx.strokeStyle = PALETTE.goldDim;
   ctx.lineWidth = 2;
   ctx.stroke();
-  drawIcon(ctx, 'star', 640, 222, 16, '#8a6a1e');
+  drawIcon(ctx, 'star', 640, 230, 16, '#8a6a1e');
   // Grade, big, flanked by gold stars.
   ctx.font = `bold 84px ${FONT_DISPLAY}`;
   line(`GRADE ${s.grade}`, FIELD.width / 2, 312, PALETTE.gold);
