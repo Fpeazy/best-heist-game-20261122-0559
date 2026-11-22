@@ -181,12 +181,27 @@ function drawGuard(ctx, s, g) {
   ctx.textAlign = 'center';
   ctx.fillStyle = g.state === 'chase' ? '#ff5a68' : 'rgba(242,234,216,0.85)';
   ctx.fillText(label, x + w / 2, y - 8);
-  // Bark bubble.
-  if (g.barkT > 0) {
+  ctx.restore();
+}
+
+/**
+ * Guard bark bubbles, drawn in their own pass AFTER the thief: a bubble
+ * drawn inside drawGuard ends up underneath the thief sprite whenever
+ * the thief stands close to the guard, and the text gets cut ("INTRUDER!
+ * Stop right ther…"). On top, with clearance above the guard's head,
+ * the whole line reads at 1280x720 and at 768x480.
+ */
+function drawBarks(ctx, s) {
+  ctx.save();
+  for (const g of s.guards) {
+    if (g.barkT <= 0) continue;
+    const x = g.x;
+    const y = g.y;
+    const w = g.width;
     ctx.font = `12px ${FONT}`;
     const tw = ctx.measureText(g.bark).width + 18;
     const bx = Math.max(6, Math.min(FIELD.width - tw - 6, x + w / 2 - tw / 2));
-    const by = y - 34;
+    const by = Math.max(60, y - 46);
     ctx.fillStyle = 'rgba(16,20,42,0.92)';
     ctx.strokeStyle = '#3a4470';
     ctx.lineWidth = 1;
@@ -194,6 +209,7 @@ function drawGuard(ctx, s, g) {
     ctx.fill();
     ctx.stroke();
     ctx.fillStyle = '#f2ead8';
+    ctx.textAlign = 'center';
     ctx.fillText(g.bark, bx + tw / 2, by + 14);
   }
   ctx.restore();
@@ -809,7 +825,12 @@ function drawWin(ctx, s) {
   ctx.fillText('CLEAN GETAWAY!', FIELD.width / 2, 210);
   ctx.fillStyle = PALETTE.text;
   ctx.font = `22px ${FONT}`;
-  ctx.fillText('The Kancil Emas is yours. The gallery never saw a thing.', FIELD.width / 2, 252);
+  ctx.fillText(
+    s.detections === 0
+      ? 'The Kancil Emas is yours. The gallery never saw a thing.'
+      : 'The Kancil Emas is yours — spotted, but never caught.',
+    FIELD.width / 2, 252,
+  );
   // Grade, big.
   ctx.fillStyle = PALETTE.gold;
   ctx.font = `bold 110px ${FONT_DISPLAY}`;
@@ -861,6 +882,7 @@ export function render(ctx, s) {
   for (const g of s.guards) drawGuard(ctx, s, g);
   if (s.decoy) drawDecoy(ctx, s);
   drawThief(ctx, s);
+  drawBarks(ctx, s);
   drawParticles(ctx, s);
   drawFloaters(ctx, s);
   drawHud(ctx, s);

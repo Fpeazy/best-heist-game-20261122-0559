@@ -101,7 +101,13 @@ export const PLATFORMS = [
   { x: 188, y: 506, w: 64, h: 14, kind: 'step' },
   { x: 252, y: 472, w: 64, h: 14, kind: 'step' },
   // The vent duct along the ceiling: crawl it to drop behind the vitrine.
+  // Reached from the balcony's right end by two new steps (372, 316):
+  // without them the jump from the balcony (440) to the old first vent
+  // step (250) is 190px, more than the ~110px jump, and the vent route
+  // was decoration no player could ever climb.
   { x: 690, y: 168, w: 540, h: 16, kind: 'vent' },
+  { x: 540, y: 372, w: 64, h: 14, kind: 'step' },
+  { x: 600, y: 316, w: 64, h: 14, kind: 'step' },
   { x: 560, y: 250, w: 60, h: 14, kind: 'step' },
   { x: 620, y: 210, w: 70, h: 14, kind: 'step' },
 ];
@@ -133,8 +139,15 @@ export const SERVICE_DOOR = { x: 1196, y: 500, w: 64, h: 120 };
 
 export const COINS = [
   { x: 240, y: 596, taken: false },
-  { x: 500, y: 596, taken: false },
-  { x: 860, y: 596, taken: false },
+  // 540, not 500: the thief jumps the crate (430-492) and is still
+  // falling off it when passing 500, 36px above the coin's pickup
+  // radius (34). At 540 the thief is back on the floor and walks it.
+  { x: 540, y: 596, taken: false },
+  // 580, not 990: the staged driver chain-jumps crate (760) -> statue
+  // (900) without touching the floor, so a coin at 990 sits under the
+  // jump arc and is never collected. At 580 the thief walks it on the
+  // floor, between the crate and the centre vitrine.
+  { x: 580, y: 596, taken: false },
   { x: 1160, y: 596, taken: false },
   { x: 150, y: 416, taken: false },
   { x: 340, y: 416, taken: false },

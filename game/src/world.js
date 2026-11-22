@@ -120,6 +120,12 @@ function collideCover(s) {
   const p = s.player;
   for (const c of COVER) {
     if (!c.solid) continue;
+    // A thief whose centre is above the block's top is standing on it
+    // (or stepping off its edge): pushing them sideways then would
+    // teleport a thief who falls off the left edge to the block's right
+    // side, and trap them walking on top of the block forever. Only
+    // push when the thief is genuinely beside the block.
+    if (p.y + p.height / 2 <= c.y + 4) continue;
     if (p.x < c.x + c.w && p.x + p.width > c.x && p.y < c.y + c.h && p.y + p.height > c.y) {
       // Push out on the side the thief came from.
       if (p.vx > 0) p.x = c.x - p.width;
@@ -170,6 +176,19 @@ function updateGuard(s, g, dt) {
       s.detections += 1;
       setBark(g, 'INTRUDER! Stop right there!');
       burst(s, eye.x, eye.y, '#ffb020', 12);
+      // Alert propagation: the other guard hears the shout and goes on
+      // alert too — suspect, not a full chase (they have not seen the
+      // thief themselves), converging on the last-seen spot.
+      for (const other of s.guards) {
+        if (other === g) continue;
+        if (other.state === 'patrol' || other.state === 'suspect') {
+          other.state = 'suspect';
+          other.suspicion = Math.max(other.suspicion, 60);
+          other.lastSeenX = g.lastSeenX;
+          other.lastSeenY = g.lastSeenY;
+          setBark(other, 'Backup! Eyes on the thief!');
+        }
+      }
     } else if (g.suspicion > 45 && g.state === 'patrol') {
       g.state = 'suspect';
       setBark(g, 'Hmm… what was that?');
@@ -394,7 +413,11 @@ function computeScore(s) {
   const timeBonus = Math.round(Math.max(0, SCORE.timeBonusCapSeconds - s.winTime) * SCORE.timeBonusPerSecond);
   const undetected = s.alarm < SCORE.undetectedAlarmMax ? SCORE.undetectedBonus : 0;
   const score = Math.round(SCORE.base + lootPoints * SCORE.perCoin + timeBonus + undetected);
-  const grade = score >= SCORE.gradeS ? 'S' : score >= SCORE.gradeA ? 'A' : score >= SCORE.gradeB ? 'B' : 'C';
+  // Grade S is the ghost grade: it needs the score AND zero detections.
+  // A run that was spotted (a chase or a camera lock-on) caps at A, so
+  // the win screen can never print "GRADE S" above "TIMES SPOTTED 1".
+  let grade = score >= SCORE.gradeS ? 'S' : score >= SCORE.gradeA ? 'A' : score >= SCORE.gradeB ? 'B' : 'C';
+  if (grade === 'S' && s.detections > 0) grade = 'A';
   return { score, grade, lootPoints, timeBonus, undetected };
 }
 
