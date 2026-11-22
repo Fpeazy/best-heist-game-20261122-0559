@@ -1,14 +1,31 @@
-// VELVET VAULT — the simulation. One gallery hall, side view.
+// VELVET VAULT — the simulation. A two-storey gallery hall, side view.
 // The thief crosses the room, reads two guard cones and one red camera
 // laser, works the security terminal, steals the Kancil Emas and leaves
-// through the service door. Every number the HUD shows comes from here:
-// alarm, coins, timer, score and grade are all computed from live state.
+// through the service door — or, when the alarm locks that door, over
+// the roof through the vent duct. Every number the HUD shows comes from
+// here: alarm, coins, timer, score and grade are all computed from live
+// state.
+//
+// Rev11 (mechanics): 17 systems, all live in the simulation — advanced
+// vision (crouch / lights / dim / flicker / tier shape the cone),
+// sound (running and jumping are loud, crouch-walking is silent),
+// suspicion, camera (sinus sweep, scan pause, cover-blocked beam,
+// disguise-aware lock-on), guard AI (search, noise investigation,
+// cutoff at the service door, body reaction), lockpick gadget,
+// environmental interaction (wardrobe hide spots, light switches),
+// mission phases, alarm tiers, extra loot + heist rank, disguise,
+// body & evidence (silent takedowns), pre-heist planning (free gadget
+// + entry point), dynamic environment (dimming + flicker), dynamic
+// escape (locked door -> roof), and the hacking timing minigame.
+// Everything deterministic: seeded via s.rng / mulberry32, no
+// Math.random, no Date.now in the simulation.
 import {
-  ALARM, CAMERA, COINS, COVER, FIELD, GUARD, LOOT, PLATFORMS, PLAYER,
-  SCORE, SERVICE_DOOR, TERMINAL, TOOLS, VITRINES,
+  ALARM, ALARM_TIERS, CAMERA, COINS, COVER, CUTOFF_X, EXTRA_LOOT, FIELD,
+  GUARD, HIDE_SPOTS, LOCKER, LOOT, MINIGAME, PLATFORMS, PLAYER, SCORE,
+  SERVICE_DOOR, SWITCHES, TERMINAL, TOOLS, VITRINES,
 } from './config.js';
 import { mulberry32 } from './random.js';
-import { insideCone } from './vision.js';
+import { insideCone, laserHit } from './vision.js';
 
 export const SCREEN_TITLE = 'title';
 export const SCREEN_PLAY = 'play';
@@ -32,6 +49,7 @@ export function newWorld(seed = 1) {
       x: 56, y: 620 - PLAYER.height, vx: 0, vy: 0,
       width: PLAYER.width, height: PLAYER.height,
       facing: 1, crouch: false, onGround: true, inVent: false,
+      hidden: false,
     },
     guards: [
       {
@@ -40,25 +58,30 @@ export function newWorld(seed = 1) {
         coneRange: GUARD.coneRange, coneHalfAngle: GUARD.coneHalfAngle,
         waypoints: [{ x: 520 }, { x: 740 }],
         lastSeenX: 0, lastSeenY: 0, loseT: 0, searchT: 0,
+        invX: 0, invKind: null, invBody: null, invArrived: false, cutoff: false,
         bark: 'All quiet on the night shift.', barkT: 4,
       },
       {
         id: 1, x: 280, y: 440 - GUARD.height, width: GUARD.width, height: GUARD.height,
         facing: 1, state: 'patrol', suspicion: 0, pauseT: 0, wp: 0,
         coneRange: GUARD.coneRange, coneHalfAngle: GUARD.coneHalfAngle,
-        waypoints: [{ x: 260 }, { x: 380 }],
+        waypoints: [{ x: 160 }, { x: 560 }],
         levelY: 440,
         lastSeenX: 0, lastSeenY: 0, loseT: 0, searchT: 0,
+        invX: 0, invKind: null, invBody: null, invArrived: false, cutoff: false,
         bark: 'Mind the velvet rope, sir.', barkT: 4,
       },
     ],
-    camera: { angle: 1.7, dir: 1, offT: 0, lockOnT: 0, hitCooldownT: 0 },
+    camera: { angle: 1.7, dir: 1, offT: 0, lockOnT: 0, hitCooldownT: 0, pauseT: 0, disguiseBeamT: 0 },
     gridOffT: 0,
     gridCooldownT: 0,
     terminalHacked: false,
+    // Render still draws its hack progress bar from this field: the
+    // minigame drives it (0..2 = 0..3 hits), so the bar survives the
+    // hold-to-hack -> minigame change untouched.
     hackProgress: 0,
     glass: { left: 'shut', centre: 'shut', right: 'shut' },
-    loot: { idol: false, tiara: false, kancil: false },
+    loot: { idol: false, tiara: false, kancil: false, goldbar: false, vase: false },
     coinTaken: COINS.map(() => false),
     blackoutT: 0,
     flashT: 0,
@@ -70,6 +93,21 @@ export function newWorld(seed = 1) {
     winTime: 0,
     lootPoints: 0,
     stepCount: 0,
+    // --- Rev11 state (see the contract in the task brief). ---
+    noise: null,
+    noiseCooldown: 0,
+    disguise: { active: false, t: 0 },
+    bodies: [],
+    planning: { gadget: null, entry: null },
+    planningUsed: { gadget: false },
+    minigame: null,
+    alarmTier: 0,
+    escape: { doorLocked: false, route: 'door', unlockedByLockpick: false, warnT: 0 },
+    mission: { phase: 0, sideDone: 0, sideTotal: 4 },
+    env: { dimT: 0, nextDimAt: 20 + (seed % 7), flicker: 1 },
+    lights: { ground: true, upper: true },
+    lockerUsed: false,
+    heistRank: 'Novice',
   };
 }
 
@@ -88,6 +126,92 @@ function burst(s, x, y, color, n = 10) {
     const sp = 40 + s.rng() * 140;
     s.particles.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 60, life: 0.6 + s.rng() * 0.5, color, size: 2 + s.rng() * 3 });
   }
+}
+
+/** Which floor a bottom-y sits on: ground hall, upper floor, or vent. */
+function floorOf(bottomY) {
+  if (bottomY >= 600) return 'ground';
+  if (bottomY <= 200) return 'vent';
+  return 'upper';
+}
+
+function guardFloor(g) {
+  return (g.levelY !== undefined ? g.levelY : 620) === 440 ? 'upper' : 'ground';
+}
+
+/** A guard's live cone range: crouch, lights, dimming and alarm tier
+ *  all shape it. Set onto g.coneRange before any insideCone call. */
+function effectiveConeRange(s, g) {
+  let range = GUARD.coneRange;
+  if (s.player.crouch) range *= 0.75; // crouched thief: -25% range
+  if (s.alarmTier === 2) range *= 1.15; // tier 2: +15% range
+  if (!s.lights[guardFloor(g)]) range *= 0.7; // dark floor: -30%
+  if (s.env.dimT > 0) range *= 0.75; // dimming event: -25%
+  return range;
+}
+
+/** Suspicion fill multiplier for this guard, right now. */
+function suspicionMultiplier(s, g, dist) {
+  let m = 1;
+  if (s.player.crouch) m *= 0.7; // crouched: -30% suspicion rate
+  // Disguise: suspicion fills at 0.35x — unless the guard is close
+  // enough to inspect (under 80px), where the disguise fools nobody.
+  if (s.disguise.active && dist >= 80) m *= 0.35;
+  if (s.alarmTier >= 1) m *= 1.2; // tier 1+: +20% suspicion rate
+  if (!s.lights[guardFloor(g)]) m *= 0.7; // dark floor: -30%
+  if (s.env.dimT > 0) m *= 0.5; // dimming event: -50%
+  if (s.env.flicker < 0.35) m *= 0.5; // chandelier flicker dip: -50%
+  return m;
+}
+
+/** Patrol-speed multiplier from the alarm tier (1 / 1.2 / 1.4). */
+function patrolMultiplier(s) {
+  return s.alarmTier === 0 ? 1 : s.alarmTier === 1 ? 1.2 : 1.4;
+}
+
+/** Emit a noise event guards can hear (same floor, within radius). */
+function emitNoise(s, x, bottomY, radius, t) {
+  s.noise = { x, y: bottomY, t, radius, floor: floorOf(bottomY) };
+}
+
+/** The hall's dimming schedule and chandelier flicker: pure functions
+ *  of s.time and the seed, so a staged run always dims at the same
+ *  moments. First dim at 20 + (seed % 7) seconds, then every 25s for
+ *  5s; flicker is a slow sinus, dipping below 0.35 near its trough. */
+function updateEnv(s) {
+  const firstDim = 20 + (s.seed % 7);
+  const period = 25;
+  const dimLen = 5;
+  if (s.time >= firstDim) {
+    const cycle = (s.time - firstDim) % period;
+    s.env.dimT = cycle < dimLen ? dimLen - cycle : 0;
+    s.env.nextDimAt = firstDim + (Math.floor((s.time - firstDim) / period) + 1) * period;
+  } else {
+    s.env.dimT = 0;
+    s.env.nextDimAt = firstDim;
+  }
+  s.env.flicker = 0.5 + 0.5 * Math.sin(s.time * 0.9 + s.seed * 1.3);
+}
+
+/** Mission phase + side objectives, recomputed live every update. */
+function updateMission(s) {
+  const side = ['idol', 'tiara', 'goldbar', 'vase'].filter((k) => s.loot[k]).length;
+  s.mission.sideDone = side;
+  let phase = 0; // 0 Infiltrate
+  if (s.loot.kancil) {
+    // 2 Steal done -> 3 Escape once the thief is heading for a way out.
+    phase = (s.player.x > 1050 || (s.escape.route === 'roof' && s.player.inVent)) ? 3 : 2;
+  } else if (s.terminalHacked) {
+    phase = 1; // 1 Hack done -> Steal
+  }
+  s.mission.phase = phase;
+}
+
+/** Heist rank from total loot taken (side loot + Kancil): 0-1 Novice,
+ *  2-3 Shadow, 4-5 Master Thief. Bonus in computeScore: 0 / 250 / 600. */
+function updateHeistRank(s) {
+  const total = s.mission.sideDone + (s.loot.kancil ? 1 : 0);
+  s.heistRank = total >= 4 ? 'Master Thief' : total >= 2 ? 'Shadow' : 'Novice';
 }
 
 /** Land the player on one-way platforms and on top of solid cover. */
@@ -115,7 +239,7 @@ function collidePlatforms(s, prevBottom) {
   }
 }
 
-/** Solid cover blocks the thief sideways (plinths, statues). */
+/** Solid cover blocks the thief sideways (plinths, statues, wall). */
 function collideCover(s) {
   const p = s.player;
   for (const c of COVER) {
@@ -147,6 +271,11 @@ function setBark(g, text) {
 }
 
 function updateGuard(s, g, dt) {
+  // A guard who has been taken down stays down: no patrol, no cone.
+  if (g.state === 'down') {
+    if (g.barkT > 0) g.barkT -= dt;
+    return;
+  }
   const p = s.player;
   const centre = playerCentre(s);
   const blinded = s.flashT > 0;
@@ -154,11 +283,14 @@ function updateGuard(s, g, dt) {
   const dist = Math.hypot(centre.x - eye.x, centre.y - eye.y);
 
   // --- Seeing: only while the thief is inside this guard's cone. ---
+  // A hidden thief (wardrobe) cannot be seen at all. The old
+  // per-frame rng crouch rule (s.rng() < 0.4 within 90px) is gone:
+  // crouch now deterministically shrinks the cone 25% and the
+  // suspicion rate 30% (see effectiveConeRange/suspicionMultiplier).
+  g.coneRange = effectiveConeRange(s, g);
   let sees = false;
-  if (!blinded && s.screen === SCREEN_PLAY) {
+  if (!blinded && !p.hidden && s.screen === SCREEN_PLAY) {
     sees = insideCone(g, centre.x, centre.y);
-    // A crouched thief behind a low plinth is harder to spot up close.
-    if (sees && p.crouch && dist < 90) sees = s.rng() < 0.4;
   }
   // A guard who sees something turns to face it: otherwise a guard that
   // walks up to the thief's last-seen spot can end up facing away from
@@ -166,26 +298,39 @@ function updateGuard(s, g, dt) {
   if (sees) g.facing = centre.x >= eye.x ? 1 : -1;
   if (sees) {
     const closeness = 1.6 - Math.min(1, dist / g.coneRange);
-    g.suspicion = Math.min(100, g.suspicion + GUARD.suspicionRate * closeness * dt);
+    g.suspicion = Math.min(100, g.suspicion + GUARD.suspicionRate * closeness * suspicionMultiplier(s, g, dist) * dt);
+    // Disguise: no chase can START unless the guard is close enough to
+    // inspect (under 80px) — suspicion is capped at 99 beyond that.
+    if (s.disguise.active && dist >= 80) g.suspicion = Math.min(g.suspicion, 99);
+    // Running inside a guard's cone at close range blows the disguise.
+    if (s.disguise.active && dist < 80 && !p.crouch && Math.abs(p.vx) > 0) {
+      s.disguise.active = false;
+      s.disguise.t = 0;
+      addFloater(s, centre.x, centre.y - 46, 'DISGUISE BLOWN!', '#ff2e3e');
+    }
     g.lastSeenX = centre.x;
     g.lastSeenY = centre.y;
     g.loseT = 0;
     if (g.suspicion >= 100 && g.state !== 'chase') {
       g.state = 'chase';
+      g.cutoff = false;
       s.alarm = Math.min(100, s.alarm + ALARM.chaseTrigger);
       s.detections += 1;
       setBark(g, 'INTRUDER! Stop right there!');
       burst(s, eye.x, eye.y, '#ffb020', 12);
       // Alert propagation: the other guard hears the shout and goes on
-      // alert too — suspect, not a full chase (they have not seen the
-      // thief themselves), converging on the last-seen spot.
+      // alert too. The ground-floor backup does NOT converge on the
+      // last-seen spot — it runs to the cutoff by the service door
+      // (x ~1050) to intercept the escape. The upper-floor guard
+      // converges on the last-seen spot as before.
       for (const other of s.guards) {
-        if (other === g) continue;
+        if (other === g || other.state === 'down') continue;
         if (other.state === 'patrol' || other.state === 'suspect') {
           other.state = 'suspect';
           other.suspicion = Math.max(other.suspicion, 60);
           other.lastSeenX = g.lastSeenX;
           other.lastSeenY = g.lastSeenY;
+          other.cutoff = guardFloor(other) === 'ground';
           setBark(other, 'Backup! Eyes on the thief!');
         }
       }
@@ -197,6 +342,7 @@ function updateGuard(s, g, dt) {
     g.suspicion = Math.max(0, g.suspicion - GUARD.suspicionDecay * dt);
     if (g.state === 'suspect' && g.suspicion < 10) {
       g.state = 'patrol';
+      g.cutoff = false;
       setBark(g, 'Must have been the wind.');
     }
     if (g.state === 'chase') {
@@ -210,8 +356,32 @@ function updateGuard(s, g, dt) {
     }
   }
 
+  // --- Hearing: a fresh noise pulls patrol/suspect guards on the same
+  // floor to the spot (running feet, jumps, landings, takedowns). ---
+  if ((g.state === 'patrol' || g.state === 'suspect') && s.noise && guardFloor(g) === s.noise.floor) {
+    if (Math.abs(g.x + g.width / 2 - s.noise.x) < s.noise.radius) {
+      g.state = 'investigate';
+      g.invX = s.noise.x;
+      g.invKind = 'noise';
+      g.invBody = null;
+      g.invArrived = false;
+      g.cutoff = false;
+      setBark(g, 'Did you hear that?');
+    }
+  }
+  // The decoy clatter pulls any patrolling guard, any distance.
+  if (g.state === 'patrol' && s.decoy) {
+    g.state = 'investigate';
+    g.invX = s.decoy.x;
+    g.invKind = 'decoy';
+    g.invBody = null;
+    g.invArrived = false;
+    setBark(g, 'Did you hear that clatter?');
+  }
+
   // --- Moving, by state. ---
   const groundY = g.levelY !== undefined ? g.levelY : 620;
+  const patrolMult = patrolMultiplier(s);
   const moveTo = (targetX, speed) => {
     const dx = targetX - (g.x + g.width / 2);
     if (Math.abs(dx) < 4) return true;
@@ -230,21 +400,19 @@ function updateGuard(s, g, dt) {
       g.pauseT -= dt;
     } else {
       const target = g.waypoints[g.wp];
-      if (moveTo(target.x, GUARD.patrolSpeed)) {
+      if (moveTo(target.x, GUARD.patrolSpeed * patrolMult)) {
         g.wp = (g.wp + 1) % g.waypoints.length;
         g.pauseT = 1.4;
       }
     }
-    if (s.decoy) {
-      g.state = 'investigate';
-      setBark(g, 'Did you hear that clatter?');
-    }
   } else if (g.state === 'suspect') {
-    moveTo(g.lastSeenX, GUARD.patrolSpeed * 1.4);
+    // Cutoff guards run to the service door; the rest walk to lastSeen.
+    const tx = g.cutoff ? CUTOFF_X : g.lastSeenX;
+    moveTo(tx, GUARD.patrolSpeed * 1.4 * patrolMult);
   } else if (g.state === 'chase') {
     const caught = Math.abs(centre.x - (g.x + g.width / 2)) < 26
       && Math.abs(centre.y - (g.y + g.height / 2)) < 46;
-    if (caught && s.screen === SCREEN_PLAY && !s.staged) {
+    if (caught && !p.hidden && s.screen === SCREEN_PLAY && !s.staged) {
       loseGame(s, 'caught');
       return;
     }
@@ -255,21 +423,45 @@ function updateGuard(s, g, dt) {
       setBark(g, 'Where did they go? Search the hall!');
     }
     moveTo(centre.x, GUARD.chaseSpeed);
-  } else if (g.state === 'investigate' && s.decoy) {
-    if (moveTo(s.decoy.x, GUARD.patrolSpeed * 1.6)) {
-      g.state = 'patrol';
+  } else if (g.state === 'investigate') {
+    if (g.invArrived) {
+      // Arrived: look around a moment, then walk back to the rounds.
+      g.pauseT -= dt;
+      if (g.pauseT <= 0) {
+        g.invArrived = false;
+        g.state = 'return';
+        setBark(g, 'Nothing here. Back to the rounds.');
+      }
+    } else if (moveTo(g.invX !== undefined ? g.invX : g.lastSeenX, GUARD.patrolSpeed * 1.6 * patrolMult)) {
+      g.invArrived = true;
       g.pauseT = 1.2;
+      // Reaching a body raises the alarm again and puts every guard
+      // on alert at the body's spot.
+      if (g.invKind === 'body' && g.invBody && !g.invBody.found) {
+        g.invBody.found = true;
+        s.alarm = Math.min(100, s.alarm + ALARM.bodyFound);
+        for (const other of s.guards) {
+          if (other.state === 'down') continue;
+          other.state = 'suspect';
+          other.suspicion = Math.max(other.suspicion, 60);
+          other.lastSeenX = g.invBody.x;
+          other.lastSeenY = g.invBody.y;
+          other.cutoff = false;
+        }
+        setBark(g, 'A body! Sound the alarm!');
+        addFloater(s, g.invBody.x, g.invBody.y - 60, 'BODY FOUND  +15%', '#ff2e3e');
+      }
     }
   } else if (g.state === 'search') {
     g.searchT -= dt;
-    moveTo(g.lastSeenX, GUARD.patrolSpeed * 1.3);
+    moveTo(g.lastSeenX, GUARD.patrolSpeed * 1.3 * patrolMult);
     if (g.searchT <= 0) {
       g.state = 'return';
       setBark(g, 'Nothing here. Back to the rounds.');
     }
   } else if (g.state === 'return') {
     const home = g.waypoints[0];
-    if (moveTo(home.x, GUARD.patrolSpeed)) {
+    if (moveTo(home.x, GUARD.patrolSpeed * patrolMult)) {
       g.state = 'patrol';
       g.wp = 0;
     }
@@ -291,28 +483,56 @@ function updateCamera(s, dt) {
   if (cam.offT > 0) {
     cam.offT -= dt;
     cam.lockOnT = 0;
+    cam.disguiseBeamT = 0;
     return;
   }
-  cam.angle += cam.dir * CAMERA.sweepSpeed * dt;
-  if (cam.angle > CAMERA.maxAngle) { cam.angle = CAMERA.maxAngle; cam.dir = -1; }
-  if (cam.angle < CAMERA.minAngle) { cam.angle = CAMERA.minAngle; cam.dir = 1; }
+  // Sweep speed varies deterministically with time (sinus, 0.3-0.6
+  // rad/s) and runs faster at higher alarm tiers (x1.5 / x2). At each
+  // end of the sweep the camera pauses briefly (scan pause).
+  if (cam.pauseT > 0) {
+    cam.pauseT -= dt;
+  } else {
+    const base = 0.3 + 0.3 * (0.5 + 0.5 * Math.sin(s.time * 0.7));
+    const tierMult = s.alarmTier === 0 ? 1 : s.alarmTier === 1 ? 1.5 : 2;
+    cam.angle += cam.dir * base * tierMult * dt;
+    if (cam.angle > CAMERA.maxAngle) { cam.angle = CAMERA.maxAngle; cam.dir = -1; cam.pauseT = CAMERA.scanPauseSeconds; }
+    if (cam.angle < CAMERA.minAngle) { cam.angle = CAMERA.minAngle; cam.dir = 1; cam.pauseT = CAMERA.scanPauseSeconds; }
+  }
   if (cam.hitCooldownT > 0) cam.hitCooldownT -= dt;
   if (cam.lockOnT > 0) cam.lockOnT -= dt;
 
-  // The beam is a thin line: does it cross the thief?
+  // The beam is a thin line: does it cross the thief? Cover blocks it
+  // (laserHit): a thief behind a plinth, statue or crate is safe.
   const centre = playerCentre(s);
   const bx = CAMERA.x + Math.cos(cam.angle) * CAMERA.beamLength;
   const by = CAMERA.y + Math.sin(cam.angle) * CAMERA.beamLength;
   const d = distToSegment(centre.x, centre.y, CAMERA.x, CAMERA.y, bx, by);
   const along = ((centre.x - CAMERA.x) * Math.cos(cam.angle) + (centre.y - CAMERA.y) * Math.sin(cam.angle));
-  if (d < CAMERA.beamWidth / 2 + 14 && along > 0 && along < CAMERA.beamLength && cam.hitCooldownT <= 0) {
-    cam.hitCooldownT = CAMERA.hitCooldown;
-    cam.lockOnT = 1.2;
-    s.alarm = Math.min(100, s.alarm + CAMERA.alarmHit);
-    s.detections += 1;
-    addFloater(s, centre.x, centre.y - 46, 'CAMERA LOCK-ON  +25%', '#ff2e3e');
-    burst(s, centre.x, centre.y, '#ff2e3e', 10);
+  const blockedAt = laserHit(CAMERA.x, CAMERA.y, cam.angle, CAMERA.beamLength);
+  const inBeam = d < CAMERA.beamWidth / 2 + 14 && along > 0 && along < CAMERA.beamLength && along < blockedAt;
+  // A hidden thief is inside a wardrobe: the beam cannot reach them.
+  // A disguised thief is only locked on after 1s of continuous beam.
+  if (!inBeam || s.player.hidden) {
+    cam.disguiseBeamT = 0;
+    return;
   }
+  if (s.disguise.active) {
+    cam.disguiseBeamT += dt;
+    if (cam.disguiseBeamT <= CAMERA.disguiseBeamSeconds) return;
+  }
+  if (cam.hitCooldownT > 0) return;
+  cam.hitCooldownT = CAMERA.hitCooldown;
+  cam.lockOnT = 1.2;
+  cam.disguiseBeamT = 0;
+  s.alarm = Math.min(100, s.alarm + CAMERA.alarmHit);
+  s.detections += 1;
+  if (s.disguise.active) {
+    s.disguise.active = false;
+    s.disguise.t = 0;
+    addFloater(s, centre.x, centre.y - 46, 'DISGUISE BLOWN!', '#ff2e3e');
+  }
+  addFloater(s, centre.x, centre.y - 46, 'CAMERA LOCK-ON  +25%', '#ff2e3e');
+  burst(s, centre.x, centre.y, '#ff2e3e', 10);
 }
 
 function updateGrid(s) {
@@ -346,15 +566,84 @@ function nearInteractable(s) {
   }
   if (!s.loot.idol && near(VITRINES.left.x + 35, VITRINES.left.y + 50, 80)) return { kind: 'idol', label: 'E — TAKE THE JADE IDOL (+3 coins)', anchor: { x: VITRINES.left.x + 35, y: VITRINES.left.y } };
   if (!s.loot.tiara && near(VITRINES.right.x + 35, VITRINES.right.y + 50, 80)) return { kind: 'tiara', label: 'E — TAKE THE PEARL TIARA (+3 coins)', anchor: { x: VITRINES.right.x + 35, y: VITRINES.right.y } };
-  if (!s.terminalHacked && near(TERMINAL.x + 28, TERMINAL.y + 40, 72)) return { kind: 'terminal', label: 'E — HACK SECURITY TERMINAL (hold)', anchor: { x: TERMINAL.x + 28, y: TERMINAL.y } };
+  if (!s.loot.goldbar && near(EXTRA_LOOT.goldbar.x + 25, EXTRA_LOOT.goldbar.y + 30, 80)) return { kind: 'goldbar', label: 'E — TAKE THE GOLD BAR (+4 coins, +8% ALARM)', anchor: { x: EXTRA_LOOT.goldbar.x + 25, y: EXTRA_LOOT.goldbar.y } };
+  if (!s.loot.vase && near(EXTRA_LOOT.vase.x + 22, EXTRA_LOOT.vase.y + 30, 80)) return { kind: 'vase', label: 'E — TAKE THE PORCELAIN VASE (+2 coins, +5% ALARM)', anchor: { x: EXTRA_LOOT.vase.x + 22, y: EXTRA_LOOT.vase.y } };
+  if (!s.terminalHacked && near(TERMINAL.x + 28, TERMINAL.y + 40, 72)) return { kind: 'terminal', label: 'E — HACK SECURITY TERMINAL (timing game)', anchor: { x: TERMINAL.x + 28, y: TERMINAL.y } };
+  // Guard-uniform locker (disguise): one uniform, then it is empty.
+  if (!s.lockerUsed && near(LOCKER.x + 24, LOCKER.y + 50, 80)) return { kind: 'locker', label: 'E — TAKE THE GUARD UNIFORM', anchor: { x: LOCKER.x + 24, y: LOCKER.y } };
+  // Wardrobe hide spots (ground hall + upper floor).
+  for (const spot of HIDE_SPOTS) {
+    if (near(spot.x + spot.w / 2, spot.y + spot.h / 2, 84)) {
+      return p.hidden
+        ? { kind: 'hide', spot, label: 'E — STEP OUT OF THE WARDROBE', anchor: { x: spot.x + spot.w / 2, y: spot.y } }
+        : { kind: 'hide', spot, label: 'E — HIDE IN THE WARDROBE', anchor: { x: spot.x + spot.w / 2, y: spot.y } };
+    }
+  }
+  // Light switches, one per floor.
+  for (const sw of SWITCHES) {
+    if (near(sw.x, sw.y, 70)) {
+      const on = s.lights[sw.floor];
+      return {
+        kind: 'switch', floor: sw.floor,
+        label: on ? `E — LIGHTS OFF (${sw.floor.toUpperCase()} FLOOR)` : `E — LIGHTS ON (${sw.floor.toUpperCase()} FLOOR)`,
+        anchor: { x: sw.x, y: sw.y - 20 },
+      };
+    }
+  }
+  // A body on the floor can be dragged out of sight.
+  for (const body of s.bodies) {
+    if (!body.hidden && near(body.x, body.y - 20, 70)) {
+      return { kind: 'body', body, label: 'E — HIDE THE BODY', anchor: { x: body.x, y: body.y - 50 } };
+    }
+  }
   return null;
+}
+
+/** Silent takedown: the thief behind a patrolling/suspecting guard,
+ *  close (under 45px), guard facing away, suspicion under 50 — and
+ *  only when no loot/terminal/wardrobe target is nearer (the takedown
+ *  is checked after nearInteractable() comes back empty). */
+function tryTakedown(s) {
+  const p = s.player;
+  if (p.hidden) return false;
+  const pc = playerCentre(s);
+  for (const g of s.guards) {
+    if (g.state !== 'patrol' && g.state !== 'suspect') continue;
+    if (g.suspicion >= 50) continue;
+    const gc = { x: g.x + g.width / 2, y: g.y + g.height / 2 };
+    if (Math.abs(pc.y - gc.y) > 100) continue; // different floor
+    const dx = pc.x - gc.x;
+    if (Math.abs(dx) > 45) continue;
+    if (dx * g.facing >= 0) continue; // must be behind the guard
+    g.state = 'down';
+    g.suspicion = 0;
+    g.cutoff = false;
+    s.bodies.push({
+      x: gc.x, y: g.y + g.height,
+      levelY: g.levelY !== undefined ? g.levelY : 620,
+      hidden: false, reported: false, found: false,
+    });
+    emitNoise(s, pc.x, p.y + p.height, 60, 0.6);
+    addFloater(s, gc.x, g.y - 10, 'SILENT TAKEDOWN', '#2ec4b6');
+    burst(s, gc.x, gc.y, '#2ec4b6', 10);
+    return true;
+  }
+  return false;
 }
 
 function doInteract(s) {
   const target = nearInteractable(s);
-  if (!target) return;
+  if (!target) {
+    tryTakedown(s);
+    return;
+  }
   if (target.kind === 'terminal') {
-    // Hacking is a hold: progress accumulates while E is held (see update).
+    // Hacking is now the timing minigame: E opens it, E stops the needle.
+    s.minigame = {
+      active: true, needle: 0, dir: 1, hits: 0,
+      need: MINIGAME.need, speed: MINIGAME.startSpeed, phase: 0,
+    };
+    s.hackProgress = 0;
     return;
   }
   if (target.kind === 'kancil') {
@@ -377,32 +666,134 @@ function doInteract(s) {
     s.coins += target.kind === 'idol' ? LOOT.idolValue : LOOT.tiaraValue;
     s.alarm = Math.min(100, s.alarm + ALARM.forceSideVitrine);
     addFloater(s, VITRINES[target.kind === 'idol' ? 'left' : 'right'].x + 35, 490, '+3 COINS  (+5% ALARM)', '#ffd97a');
+    return;
+  }
+  if (target.kind === 'goldbar' || target.kind === 'vase') {
+    const key = target.kind;
+    const cfg = EXTRA_LOOT[key];
+    s.loot[key] = true;
+    s.coins += key === 'goldbar' ? LOOT.goldbarValue : LOOT.vaseValue;
+    s.alarm = Math.min(100, s.alarm + (key === 'goldbar' ? ALARM.goldbarAlarm : ALARM.vaseAlarm));
+    addFloater(s, cfg.x + cfg.w / 2, cfg.y - 10, key === 'goldbar' ? '+4 COINS  (+8% ALARM)' : '+2 COINS  (+5% ALARM)', '#ffd97a');
+    burst(s, cfg.x + cfg.w / 2, cfg.y + 30, '#ffd97a', 14);
+    return;
+  }
+  if (target.kind === 'locker') {
+    s.disguise = { active: true, t: 25 };
+    s.lockerUsed = true;
+    addFloater(s, LOCKER.x + 24, LOCKER.y - 10, 'DISGUISE — GUARD UNIFORM (25s)', '#2ec4b6');
+    return;
+  }
+  if (target.kind === 'hide') {
+    const p = s.player;
+    p.hidden = !p.hidden;
+    if (p.hidden) {
+      // Step into the wardrobe: centre the thief on it.
+      p.x = target.spot.x + target.spot.w / 2 - p.width / 2;
+      p.vx = 0;
+      addFloater(s, target.spot.x + target.spot.w / 2, target.spot.y - 10, 'HIDDEN', '#2ec4b6');
+    }
+    return;
+  }
+  if (target.kind === 'switch') {
+    s.lights[target.floor] = !s.lights[target.floor];
+    const on = s.lights[target.floor];
+    addFloater(s, target.floor === 'ground' ? 120 : 160, target.floor === 'ground' ? 520 : 340,
+      on ? `${target.floor.toUpperCase()} LIGHTS ON` : `${target.floor.toUpperCase()} LIGHTS OFF`, '#ffd97a');
+    return;
+  }
+  if (target.kind === 'body') {
+    target.body.hidden = true;
+    addFloater(s, target.body.x, target.body.y - 60, 'BODY HIDDEN', '#2ec4b6');
+  }
+}
+
+/** The hacking minigame: a needle sweeps 0..100 and back; press E in
+ *  the green zone (40-60) for a hit, 3 hits hack the terminal. A miss
+ *  adds +5% alarm and keeps the hits (choice: the pressure is the
+ *  alarm, not losing progress). Needle phase advances from stored
+ *  state, so it is deterministic for a given input script — and the
+ *  render/driver package can read s.minigame.needle live to time its
+ *  presses. First green window: ~0.73-1.09s after the game opens
+ *  (speed 55/s from 0). Speed rises 25 per hit. */
+function updateMinigame(s, input, dt) {
+  const mg = s.minigame;
+  mg.phase += mg.speed * dt;
+  if (mg.phase >= 200) mg.phase -= 200;
+  if (mg.phase <= 100) { mg.needle = mg.phase; mg.dir = 1; }
+  else { mg.needle = 200 - mg.phase; mg.dir = -1; }
+  if (input.interactPressed) {
+    if (mg.needle >= MINIGAME.zoneLo && mg.needle <= MINIGAME.zoneHi) {
+      mg.hits += 1;
+      mg.speed = MINIGAME.startSpeed + mg.hits * MINIGAME.speedPerHit;
+      s.hackProgress = (mg.hits / mg.need) * 2; // render's progress bar
+      addFloater(s, TERMINAL.x + 28, 500, `HACK ${mg.hits}/${mg.need}`, '#2ec4b6');
+      if (mg.hits >= mg.need) {
+        s.terminalHacked = true;
+        s.alarm = Math.max(0, s.alarm - ALARM.hackRelief);
+        s.camera.offT = CAMERA.hackOffSeconds;
+        s.gridOffT = CAMERA.hackOffSeconds;
+        s.minigame = null;
+        addFloater(s, TERMINAL.x + 28, 500, 'TERMINAL HACKED  −20%', '#2ec4b6');
+        burst(s, TERMINAL.x + 28, 560, '#2ec4b6', 16);
+      }
+    } else {
+      s.alarm = Math.min(100, s.alarm + ALARM.minigameMiss);
+      addFloater(s, TERMINAL.x + 28, 500, 'MISS  +5%', '#ff2e3e');
+    }
   }
 }
 
 function useTool(s, tool) {
   const p = s.player;
-  if (tool === 'emp' && s.coins >= TOOLS.emp.cost) {
-    s.coins -= TOOLS.emp.cost;
+  // Pre-heist planning: the chosen gadget is free ONCE, no coins spent.
+  const free = s.planning.gadget === tool && !s.planningUsed.gadget;
+  const pay = (cost) => {
+    if (free) { s.planningUsed.gadget = true; return true; }
+    if (s.coins < cost) return false;
+    s.coins -= cost;
+    return true;
+  };
+  if (tool === 'emp' && pay(TOOLS.emp.cost)) {
     s.camera.offT = CAMERA.empOffSeconds;
     s.gridOffT = CAMERA.empOffSeconds;
     s.blackoutT = 3;
     addFloater(s, p.x + 20, p.y - 20, 'EMP! THE BLACKOUT', '#2ec4b6');
     return true;
   }
-  if (tool === 'decoy' && s.coins >= TOOLS.decoy.cost) {
-    s.coins -= TOOLS.decoy.cost;
+  if (tool === 'decoy' && pay(TOOLS.decoy.cost)) {
     s.decoy = { x: Math.max(40, Math.min(FIELD.width - 40, p.x + p.facing * 150)), y: 620, t: 4 };
     addFloater(s, s.decoy.x, 580, 'DECOY — CLATTER!', '#ffd97a');
     return true;
   }
-  if (tool === 'flash' && s.coins >= TOOLS.flash.cost) {
-    s.coins -= TOOLS.flash.cost;
+  if (tool === 'flash' && pay(TOOLS.flash.cost)) {
     s.flashT = 3;
     for (const g of s.guards) g.suspicion = Math.max(0, g.suspicion - 60);
     addFloater(s, p.x + 20, p.y - 20, 'FLASHBANG!', '#ffffff');
     burst(s, p.x + 20, p.y + 20, '#ffffff', 16);
     return true;
+  }
+  if (tool === 'lockpick') {
+    // Lockpick only fires on a real target — never spends coins (or
+    // the free planning use) on nothing.
+    const target = nearInteractable(s);
+    const nearDoor = p.x + p.width > SERVICE_DOOR.x - 60 && p.y + p.height > 500;
+    if (target && (target.kind === 'idol' || target.kind === 'tiara')) {
+      if (!pay(TOOLS.lockpick.cost)) return false;
+      s.glass[target.kind === 'idol' ? 'left' : 'right'] = 'open';
+      s.loot[target.kind] = true;
+      s.coins += target.kind === 'idol' ? LOOT.idolValue : LOOT.tiaraValue;
+      // Silent: NO +5% alarm, unlike forcing the vitrine open.
+      addFloater(s, VITRINES[target.kind === 'idol' ? 'left' : 'right'].x + 35, 490, 'LOCKPICK — SILENT!', '#2ec4b6');
+      return true;
+    }
+    if (s.escape.doorLocked && nearDoor) {
+      if (!pay(TOOLS.lockpick.cost)) return false;
+      s.escape.unlockedByLockpick = true;
+      addFloater(s, SERVICE_DOOR.x + 32, 470, 'DOOR UNLOCKED', '#2ec4b6');
+      return true;
+    }
+    return false;
   }
   return false;
 }
@@ -411,17 +802,18 @@ function computeScore(s) {
   const lootPoints = s.coins
     + (s.loot.idol ? 0 : 0) // coins already include idol/tiara values
     + (s.loot.kancil ? LOOT.kancilValue : 0);
-  // NOTE: coins counter already counts idol (+3) and tiara (+3) values,
-  // so lootPoints = coins + kancil value only.
+  // NOTE: coins counter already counts idol (+3), tiara (+3), gold bar
+  // (+4) and vase (+2) values, so lootPoints = coins + kancil value only.
   const timeBonus = Math.round(Math.max(0, SCORE.timeBonusCapSeconds - s.winTime) * SCORE.timeBonusPerSecond);
   const undetected = s.alarm < SCORE.undetectedAlarmMax ? SCORE.undetectedBonus : 0;
-  const score = Math.round(SCORE.base + lootPoints * SCORE.perCoin + timeBonus + undetected);
+  const rankBonus = SCORE.rankBonus[s.heistRank] || 0;
+  const score = Math.round(SCORE.base + lootPoints * SCORE.perCoin + timeBonus + undetected + rankBonus);
   // Grade S is the ghost grade: it needs the score AND zero detections.
   // A run that was spotted (a chase or a camera lock-on) caps at A, so
   // the win screen can never print "GRADE S" above "TIMES SPOTTED 1".
   let grade = score >= SCORE.gradeS ? 'S' : score >= SCORE.gradeA ? 'A' : score >= SCORE.gradeB ? 'B' : 'C';
   if (grade === 'S' && s.detections > 0) grade = 'A';
-  return { score, grade, lootPoints, timeBonus, undetected };
+  return { score, grade, lootPoints, timeBonus, undetected, rankBonus };
 }
 
 function winGame(s) {
@@ -439,10 +831,27 @@ function loseGame(s, reason) {
   s.winTime = s.time;
 }
 
-export function startGame(s) {
+export function startGame(s, planning) {
   const fresh = newWorld(s.seed);
   Object.keys(fresh).forEach((k) => { s[k] = fresh[k]; });
   s.screen = SCREEN_PLAY;
+  // Pre-heist planning (optional): a free gadget + an entry point.
+  // Called with no argument it behaves exactly as before.
+  if (planning) {
+    const gadget = ['emp', 'decoy', 'flash', 'lockpick'].includes(planning.gadget) ? planning.gadget : null;
+    const entry = ['door', 'vent', 'upper'].includes(planning.entry) ? planning.entry : null;
+    s.planning = { gadget, entry };
+    if (entry === 'vent') {
+      s.player.x = 700;
+      s.player.y = 168 - PLAYER.height;
+      s.player.onGround = true;
+    } else if (entry === 'upper') {
+      s.player.x = 100;
+      s.player.y = 440 - PLAYER.height;
+      s.player.onGround = true;
+    }
+    // 'door' (or null) keeps the normal spawn: x=56, ground floor.
+  }
 }
 
 export function update(s, input, dt) {
@@ -462,33 +871,73 @@ export function update(s, input, dt) {
     }
   }
 
+  // Dynamic environment (dimming schedule + flicker), then the live
+  // alarm tier and the escape state it drives.
+  updateEnv(s);
+  s.alarmTier = s.alarm < ALARM_TIERS.tier1At ? 0 : s.alarm < ALARM_TIERS.tier2At ? 1 : 2;
+  s.escape.doorLocked = s.alarmTier === 2 && !s.escape.unlockedByLockpick;
+  s.escape.route = s.escape.doorLocked ? 'roof' : 'door';
+
   const p = s.player;
   const prevBottom = p.y + p.height;
+  const wasAirborne = !p.onGround;
 
-  // --- Player movement (platformer, one-way platforms). ---
-  const speed = p.crouch ? PLAYER.crouchSpeed : PLAYER.walkSpeed;
-  p.vx = 0;
-  if (input.left) { p.vx = -speed; p.facing = -1; }
-  if (input.right) { p.vx = speed; p.facing = 1; }
-  p.crouch = Boolean(input.crouch);
-  p.height = p.crouch ? PLAYER.crouchHeight : PLAYER.height;
-  if (input.jump && p.onGround) {
-    p.vy = -PLAYER.jumpSpeed;
-    p.onGround = false;
+  if (s.minigame && s.minigame.active) {
+    // Hacking: the thief stands frozen at the terminal, guards keep
+    // moving. E stops the needle; movement input is ignored.
+    updateMinigame(s, input, dt);
+    p.vx = 0;
+  } else {
+    // --- Player movement (platformer, one-way platforms). ---
+    // Stepping out of a wardrobe: any movement input leaves hiding.
+    if (p.hidden && (input.left || input.right || input.jump)) p.hidden = false;
+    const speed = p.crouch ? PLAYER.crouchSpeed : PLAYER.walkSpeed;
+    p.vx = 0;
+    if (input.left) { p.vx = -speed; p.facing = -1; }
+    if (input.right) { p.vx = speed; p.facing = 1; }
+    p.crouch = Boolean(input.crouch);
+    // Keep the player's BOTTOM fixed when the height changes: without
+    // this, crouching floats the body 22px and it falls back down —
+    // which the landing-noise rule would (wrongly) hear as a loud step.
+    const newHeight = p.crouch ? PLAYER.crouchHeight : PLAYER.height;
+    if (newHeight !== p.height) {
+      p.y += p.height - newHeight;
+      p.height = newHeight;
+    }
+    if (input.jump && p.onGround) {
+      p.vy = -PLAYER.jumpSpeed;
+      p.onGround = false;
+      // Jumping is loud: noise radius 90.
+      emitNoise(s, p.x + p.width / 2, prevBottom, 90, 0.6);
+    }
+    p.vy += PLAYER.gravity * dt;
+    if (p.vy > 900) p.vy = 900;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    if (p.x < 8) p.x = 8;
+    if (p.x > FIELD.width - p.width - 8) p.x = FIELD.width - p.width - 8;
+    if (p.y > 620 - p.height) { p.y = 620 - p.height; p.vy = 0; p.onGround = true; }
+    collidePlatforms(s, prevBottom);
+    collideCover(s);
+    // Vent duct: low ceiling, the thief crawls.
+    p.inVent = p.y + p.height <= 200 && p.x > 680;
+
+    // Landing is loud too: noise radius 90.
+    if (wasAirborne && p.onGround) {
+      emitNoise(s, p.x + p.width / 2, p.y + p.height, 90, 0.6);
+    }
+    // Running at full speed is loud — a noise every step. Crouching
+    // is silent, and a hidden thief makes no noise at all.
+    if (p.onGround && !p.crouch && !p.hidden && p.vx !== 0) {
+      s.noiseCooldown -= dt;
+      if (s.noiseCooldown <= 0) {
+        emitNoise(s, p.x + p.width / 2, p.y + p.height, 120, 0.7);
+        s.noiseCooldown = 0.45;
+      }
+    }
   }
-  p.vy += PLAYER.gravity * dt;
-  if (p.vy > 900) p.vy = 900;
-  p.x += p.vx * dt;
-  p.y += p.vy * dt;
-  if (p.x < 8) p.x = 8;
-  if (p.x > FIELD.width - p.width - 8) p.x = FIELD.width - p.width - 8;
-  if (p.y > 620 - p.height) { p.y = 620 - p.height; p.vy = 0; p.onGround = true; }
-  collidePlatforms(s, prevBottom);
-  collideCover(s);
-  // Vent duct: low ceiling, the thief crawls.
-  p.inVent = p.y + p.height <= 200 && p.x > 680;
 
-  // --- Coins on the floor, balcony and in the vent. ---
+  // --- Coins on the floor, upper floor and in the vent. ---
   COINS.forEach((coin, i) => {
     if (s.coinTaken[i]) return;
     if (Math.abs(p.x + p.width / 2 - coin.x) < 30 && Math.abs(p.y + p.height / 2 - coin.y) < 34) {
@@ -500,39 +949,41 @@ export function update(s, input, dt) {
   });
 
   // --- Interactions. ---
-  if (input.interactPressed) doInteract(s);
-  const target = nearInteractable(s);
-  if (target && target.kind === 'terminal' && input.interact) {
-    s.hackProgress += dt;
-    if (s.hackProgress >= 2) {
-      s.terminalHacked = true;
-      s.alarm = Math.max(0, s.alarm - ALARM.hackRelief);
-      s.camera.offT = CAMERA.hackOffSeconds;
-      s.gridOffT = CAMERA.hackOffSeconds;
-      addFloater(s, TERMINAL.x + 28, 500, 'TERMINAL HACKED  −20%', '#2ec4b6');
-      burst(s, TERMINAL.x + 28, 560, '#2ec4b6', 16);
-    }
-  } else if (!input.interact) {
-    s.hackProgress = Math.max(0, s.hackProgress - dt * 2);
+  if (s.minigame && s.minigame.active) {
+    s.prompt = 'E — STOP THE NEEDLE IN THE GREEN ZONE';
+    s.promptAnchor = { x: TERMINAL.x + 28, y: TERMINAL.y };
+  } else {
+    if (input.interactPressed) doInteract(s);
+    const target = nearInteractable(s);
+    s.prompt = target ? target.label : '';
+    s.promptAnchor = target ? target.anchor : null;
   }
-  s.prompt = target ? target.label : '';
-  s.promptAnchor = target ? target.anchor : null;
 
   // --- Tools. ---
   if (input.useEmp) useTool(s, 'emp');
   if (input.useDecoy) useTool(s, 'decoy');
   if (input.useFlash) useTool(s, 'flash');
+  if (input.useLockpick) useTool(s, 'lockpick');
 
   // --- Timers. ---
   if (s.blackoutT > 0) s.blackoutT -= dt;
   if (s.flashT > 0) s.flashT -= dt;
   if (s.gridOffT > 0) s.gridOffT -= dt;
   if (s.gridCooldownT > 0) s.gridCooldownT -= dt;
+  if (s.escape.warnT > 0) s.escape.warnT -= dt;
+  if (s.noise) {
+    s.noise.t -= dt;
+    if (s.noise.t <= 0) s.noise = null;
+  }
+  if (s.disguise.active) {
+    s.disguise.t -= dt;
+    if (s.disguise.t <= 0) { s.disguise.active = false; s.disguise.t = 0; }
+  }
   if (s.decoy) {
     s.decoy.t -= dt;
     if (s.decoy.t <= 0) {
       s.decoy = null;
-      for (const g of s.guards) if (g.state === 'investigate') { g.state = 'return'; setBark(g, 'Nothing there. False alarm.'); }
+      for (const g of s.guards) if (g.state === 'investigate' && g.invKind === 'decoy') { g.state = 'return'; g.invArrived = false; setBark(g, 'Nothing there. False alarm.'); }
     }
   }
 
@@ -541,10 +992,52 @@ export function update(s, input, dt) {
   for (const g of s.guards) updateGuard(s, g, dt);
   if (s.screen !== SCREEN_PLAY) return;
 
-  // --- Escape: Kancil in hand + reach the service door. ---
-  if (s.loot.kancil && p.x + p.width > SERVICE_DOOR.x + 6 && p.y + p.height > 500) {
-    winGame(s);
-    return;
+  // --- Bodies: a guard who sees one raises the alarm (+20% once per
+  // body) and investigates it; reaching it is +15% and alerts everyone.
+  for (const body of s.bodies) {
+    if (body.hidden || body.reported) continue;
+    for (const g of s.guards) {
+      if (g.state === 'down' || g.state === 'chase') continue;
+      if (insideCone(g, body.x, body.y - 24)) {
+        body.reported = true;
+        s.alarm = Math.min(100, s.alarm + ALARM.bodySpotted);
+        g.state = 'investigate';
+        g.invX = body.x;
+        g.invKind = 'body';
+        g.invBody = body;
+        g.invArrived = false;
+        g.cutoff = false;
+        setBark(g, 'A body! Someone is here!');
+        addFloater(s, body.x, body.y - 60, 'BODY SPOTTED  +20%', '#ff2e3e');
+        break;
+      }
+    }
+  }
+
+  updateMission(s);
+  updateHeistRank(s);
+
+  // The alarm may have moved this frame (camera lock-on, body found):
+  // refresh the tier + escape state so the win check below is current.
+  s.alarmTier = s.alarm < ALARM_TIERS.tier1At ? 0 : s.alarm < ALARM_TIERS.tier2At ? 1 : 2;
+  s.escape.doorLocked = s.alarmTier === 2 && !s.escape.unlockedByLockpick;
+  s.escape.route = s.escape.doorLocked ? 'roof' : 'door';
+
+  // --- Escape: Kancil in hand + reach the service door (unlocked) or
+  // the roof end of the vent duct (x >= 1180, y <= 200). ---
+  if (s.loot.kancil) {
+    if (!s.escape.doorLocked && p.x + p.width > SERVICE_DOOR.x + 6 && p.y + p.height > 500) {
+      winGame(s);
+      return;
+    }
+    if (s.escape.doorLocked && p.x + p.width > SERVICE_DOOR.x + 6 && p.y + p.height > 500 && s.escape.warnT <= 0) {
+      addFloater(s, SERVICE_DOOR.x + 32, 470, 'DOOR LOCKED — ESCAPE VIA THE ROOF!', '#ff2e3e');
+      s.escape.warnT = 3;
+    }
+    if (p.x >= 1180 && p.y + p.height <= 200) {
+      winGame(s);
+      return;
+    }
   }
 
   // --- Particles and floaters. ---
@@ -565,13 +1058,19 @@ export function update(s, input, dt) {
 /** The live detection word the HUD shows: computed from guard state. */
 export function detectionWord(s) {
   if (s.guards.some((g) => g.state === 'chase')) return 'SEEN — RUN!';
-  if (s.guards.some((g) => g.suspicion > 45 || g.state === 'suspect' || g.state === 'investigate')) return 'SPOTTED';
+  if (s.guards.some((g) => g.state !== 'down' && (g.suspicion > 45 || g.state === 'suspect' || g.state === 'investigate'))) return 'SPOTTED';
   return 'HIDDEN';
 }
 
-/** One-line objective, from live state. */
+/** One-line objective, from the live mission phase. */
 export function objectiveLine(s) {
-  if (s.loot.kancil) return 'ESCAPE — reach the SERVICE DOOR →';
-  if (s.terminalHacked) return 'Camera down — steal the KANCIL EMAS';
+  const phase = s.mission ? s.mission.phase : 0;
+  if (phase === 3) {
+    return s.escape.route === 'roof'
+      ? 'ESCAPE — climb the VENT to the ROOF →'
+      : 'ESCAPE — reach the SERVICE DOOR →';
+  }
+  if (phase === 2) return 'ESCAPE — reach the SERVICE DOOR →';
+  if (phase === 1) return 'Camera down — steal the KANCIL EMAS';
   return 'Hack the TERMINAL, then steal the KANCIL EMAS';
 }
