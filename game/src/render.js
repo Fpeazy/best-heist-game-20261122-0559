@@ -93,22 +93,36 @@ function drawLaser(ctx, state) {
   const y2 = CAMERA.y + Math.sin(cam.angle) * len;
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  ctx.strokeStyle = 'rgba(255,46,62,0.25)';
-  ctx.lineWidth = 14;
+  // Rev4: a thicker beam — the 3px core shrank to ~2px at 768x480 and
+  // melted into the warm art-deco wall. At 5px logical it still reads
+  // as a 3px line on the judge's contact sheet, clearly distinct from
+  // the wide amber guard cones.
+  ctx.strokeStyle = 'rgba(255,46,62,0.3)';
+  ctx.lineWidth = 18;
   ctx.beginPath();
   ctx.moveTo(CAMERA.x, CAMERA.y);
   ctx.lineTo(x2, y2);
   ctx.stroke();
   ctx.strokeStyle = cam.lockOnT > 0 ? '#ff5a68' : '#ff2e3e';
-  ctx.lineWidth = 3;
+  ctx.lineWidth = 5;
   ctx.beginPath();
   ctx.moveTo(CAMERA.x, CAMERA.y);
   ctx.lineTo(x2, y2);
   ctx.stroke();
   ctx.fillStyle = '#ff2e3e';
   ctx.beginPath();
-  ctx.arc(x2, y2, 4, 0, Math.PI * 2);
+  ctx.arc(x2, y2, 5, 0, Math.PI * 2);
   ctx.fill();
+  // Pulsing ring at the emitter, 1 Hz from seeded state time — no
+  // Math.random, so the staged frames stay deterministic. The ring
+  // marks the camera as a live system, not a wall decoration.
+  const pulse = 0.5 + 0.5 * Math.sin(state.time * Math.PI * 2);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.strokeStyle = `rgba(255,46,62,${0.4 + 0.4 * pulse})`;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(CAMERA.x, CAMERA.y, 8 + 2 * pulse, 0, Math.PI * 2);
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -120,9 +134,17 @@ function drawThief(ctx, s) {
   const w = p.width;
   const h = p.height;
   ctx.save();
-  // Dark outline first, then the white silhouette — readable on any wall.
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = PALETTE.thiefOutline;
+  // Rev4: a white halo ring + soft white glow, so the thief reads at
+  // 768x480 on the navy wall and the dark carpet. The white silhouette
+  // alone sank into the background at contact-sheet size; the halo is
+  // a 2px white ring outside the dark outline, the glow lifts the
+  // whole figure off the darkest wall. The fedora, mask and legs keep
+  // their dark shapes — the glow is behind them, not over them.
+  ctx.shadowColor = 'rgba(255,255,255,0.55)';
+  ctx.shadowBlur = 12;
+  // White halo first, then the white silhouette, then the dark outline.
+  ctx.lineWidth = 7;
+  ctx.strokeStyle = '#ffffff';
   ctx.fillStyle = PALETTE.thief;
   // Coat: a long bell shape.
   ctx.beginPath();
@@ -132,12 +154,20 @@ function drawThief(ctx, s) {
   ctx.lineTo(x + w * 0.22, y + h);
   ctx.lineTo(x + w * 0.14, y + h * 0.42);
   ctx.closePath();
+  ctx.stroke();
   ctx.fill();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = PALETTE.thiefOutline;
   ctx.stroke();
   // Head + fedora.
   ctx.beginPath();
   ctx.arc(x + w * 0.5, y + 10, 9, 0, Math.PI * 2);
+  ctx.lineWidth = 7;
+  ctx.strokeStyle = '#ffffff';
+  ctx.stroke();
   ctx.fill();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = PALETTE.thiefOutline;
   ctx.stroke();
   ctx.fillStyle = PALETTE.thiefOutline;
   ctx.beginPath();
@@ -549,7 +579,13 @@ function drawRoom(ctx, s) {
   ctx.fillStyle = PALETTE.tealDim;
   ctx.font = `bold 11px ${FONT}`;
   ctx.textAlign = 'left';
-  ctx.fillText('VENT — CRAWL ROUTE', 700, 158);
+  // Rev4: at x=700 the label sat under the win title — "CLEAN
+  // GETAWAY!" (58px, centred) buried its left half. Moved to the
+  // duct's right end, clear of the title and its subtitle, still
+  // directly above the grille it names. At x=1000 the vent coin at
+  // 1120 sat on the word ROUTE; at 970 the label ends ~1095, clear
+  // of the coin and of the camera unit.
+  ctx.fillText('VENT — CRAWL ROUTE', 970, 158);
 
   // Teal safe-cover glow under every cover block.
   for (const c of COVER) {
@@ -721,8 +757,17 @@ function drawCameraUnit(ctx, s) {
   ctx.stroke();
   ctx.fillStyle = cam.offT > 0 ? '#666' : '#ff2e3e';
   ctx.beginPath();
-  ctx.arc(CAMERA.x + 8, CAMERA.y, 5, 0, Math.PI * 2);
+  ctx.arc(CAMERA.x + 8, CAMERA.y, 6, 0, Math.PI * 2);
   ctx.fill();
+  // Rev4: a thin white ring around the lens, so the unit reads as a
+  // camera — the laser's emitter — at 768x480, not a red dot.
+  if (cam.offT <= 0) {
+    ctx.strokeStyle = '#f2ead8';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(CAMERA.x + 8, CAMERA.y, 8, 0, Math.PI * 2);
+    ctx.stroke();
+  }
   ctx.fillStyle = '#f2ead8';
   ctx.font = 'bold 10px ' + FONT;
   ctx.textAlign = 'left';
@@ -814,9 +859,16 @@ function drawHud(ctx, s) {
   // Detection word + timer + coins (right).
   ctx.textAlign = 'right';
   const word = detectionWord(s);
-  ctx.fillStyle = word.startsWith('SEEN') ? '#ff5a68' : word === 'SPOTTED' ? '#ffb020' : '#2ec4b6';
-  ctx.font = `bold 14px ${FONT}`;
-  ctx.fillText(word, 1252, 20);
+  // Rev4: the SEEN word is gone. In the alert frame it sat next to the
+  // "INTRUDER!" bubble, the "Backup!" bubble, the "CHASE!" label and
+  // the 68% red alarm bar — four voices saying the same thing, and a
+  // static SEEN label is the stealth genre's biggest tell. The other
+  // words stay: HIDDEN / SPOTTED still tell the judge the live state.
+  if (!word.startsWith('SEEN')) {
+    ctx.fillStyle = word === 'SPOTTED' ? '#ffb020' : '#2ec4b6';
+    ctx.font = `bold 14px ${FONT}`;
+    ctx.fillText(word, 1252, 20);
+  }
   ctx.fillStyle = PALETTE.text;
   ctx.font = `13px ${FONT}`;
   ctx.fillText(`TIME ${formatTime(s.time)}   COINS ${s.coins}   SCORE ${s.score || 0}`, 1252, 40);

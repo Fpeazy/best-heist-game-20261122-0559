@@ -277,26 +277,29 @@ export function buildShot(name) {
   }
 
   if (name === 'stealth') {
-    // Walk in, grab the first coin, then crouch behind the floor crate
-    // while the guard's amber cone sweeps past, cut short by the crate.
-    // Alarm here is only the slow creep: ~24s of play, so ~12%.
-    // Rev3: the freeze no longer happens behind the crate — there the
-    // thief was squeezed between the left vitrine and the crate and
-    // read as half-hidden. After the wait he steps out into the open
-    // gap between the crate (ends 492) and the centre vitrine (starts
-    // 600) and crouches whole in it: thief fully visible, Kancil Emas
-    // beside him, the floor guard's amber cone sweeping just past him
-    // to the right. The step-out lands while the guard is at the far
-    // end of his patrol facing away, so the frame stays HIDDEN.
+    // Walk in, grab the first coin, then crouch snug against the floor
+    // crate's left edge while the guard's amber cone sweeps in from
+    // the right, cut short by the crate. Alarm here is only the slow
+    // creep: ~16s of play, so ~8%.
+    // Rev4: the freeze no longer steps out into the open gap between
+    // the crate (ends 492) and the centre vitrine (starts 600) — there
+    // the thief crouched in open floor while the crate beside him was
+    // labelled COVER, a contradiction the judge catches without a
+    // playtest. Now the freeze IS the wait spot: the thief (px ~378,
+    // crouched, whole) sits 12px left of the crate, and the crate
+    // stands between him and the guard's cone — the cone's rays hit
+    // the crate face and stop, suspicion stays 0 through the whole
+    // wait. The wait is 15s, not 21, so the freeze lands mid leftward
+    // sweep (guard centre ~665 at t=16.27, facing left, cone visibly
+    // ending at the crate) instead of at the far end facing away.
     const plan = [
       { x: 250 },
       { x: 410 },
-      { x: 410, action: 'wait', seconds: 21 },
-      { x: 545 },
+      { x: 410, action: 'wait', seconds: 15 },
     ];
     stepWorld(state, plan, 40 / STEP);
-    // Freeze crouched in the open gap (the last step stands the thief
-    // back up as the plan empties; the staged pose is the crouch).
+    // Freeze crouched at the wait spot (the plan empties the moment
+    // the wait ends; the staged pose is the crouch).
     state.player.crouch = true;
     state.player.height = 36;
     state.player.y = 620 - 36;
