@@ -111,10 +111,9 @@ if (shotName) {
     thief: { x: Math.round(state.player.x), y: Math.round(state.player.y) },
     cameraAngle: Number(state.camera.angle.toFixed(2)),
     cameraOff: state.camera.offT,
-    // Rev12 live state, for the verifier: heat, shadow, inventory,
+    // Rev12 live state, for the verifier: heat, inventory,
     // ghost streak, close calls, tracker and network status.
     heatPeak: Math.floor(state.heatPeak || 0),
-    inShadow: Boolean(state.shadow && state.shadow.inShadow),
     inventory: state.inventory,
     gadgetsUsed: state.gadgetsUsed,
     ghostStreak: state.ghostStreak || 0,

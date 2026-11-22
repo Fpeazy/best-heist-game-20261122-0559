@@ -361,16 +361,13 @@ export function buildShot(name) {
   }
 
   if (name === 'stealth') {
-    // Rev13 — the rev11/12 stealth frame showed the hacking minigame,
-    // but the two rev12 systems it was supposed to showcase never
-    // read: the thief at the terminal stands in NO shadow zone, and
-    // both guards were patrol/return (the LKP marker only draws for
-    // search/suspect). This frame shows them both, from the real rules:
-    // the thief is seen, FLASHes the chasing guard blind, and hides
-    // crouched in the ground shadow zone (500-590) while the guard
-    // SEARCHES the last-seen spot — IN SHADOW pill + teal ring on the
-    // thief, amber "?" ring at the last-seen spot, SEARCHING label.
-    // The route, measured in node (rev13 probes 9-12):
+    // Rev14 — the shadow system is gone (Fxzy: "Hapus shadow"), so the
+    // rev13 freeze (crouched in the ground shadow zone, IN SHADOW pill)
+    // cannot be staged any more. This frame keeps the rev13 beat that
+    // mattered — the guard SEARCHES the last-seen spot, amber "?" ring
+    // at the LKP — and brings back the rev11/12 beat rev13 lost: the
+    // thief at the terminal, mid-hack, minigame panel open with the
+    // needle mid-green. The route, measured in node (rev14 probes):
     //  - Walk to 860 and stand 2s: the guard finishes investigating
     //    the walk noise and his suspicion decays to 0 (patrol). A
     //    bare detour without the stand leaves him investigating at
@@ -383,12 +380,18 @@ export function buildShot(name) {
     //  - FLASH at once, where the thief stands: the guard is blinded
     //    3s, so he cannot catch the thief while the thief moves, and
     //    loses the trail after 2s (chase -> search, alarm -6).
-    //  - Run to 545 and crouch: the thief is inside the shadow zone
-    //    (centre 565) before the guard flips to search. The freeze
-    //    lands the step the guard enters search: alarm ~33, tier 0,
-    //    the camera still live, the Kancil vitrine in frame.
-    // The minigame panel leaves this frame (the minigame itself still
-    // runs: the win route hacks the terminal through it, play-tested).
+    //  - EMP where the thief stands (stock 1, free): the camera stays
+    //    dead 5s, so the run to the terminal crosses its floor zone
+    //    unseen — without it the camera locks on en route (alarm 68,
+    //    tier 1, det 2: measured in the no-EMP probe, cut).
+    //  - Run to the terminal, open the hack: the guard is SEARCHING
+    //    the last-seen spot (580,591) while the thief hacks. The
+    //    freeze lands when the needle sits mid-green (50-55): alarm
+    //    ~34, tier 0, camera off ~2s (EMP aftermath, blackout just
+    //    ended), Kancil vitrine in frame. The thief stands at the
+    //    terminal, not crouched behind cover — the minigame is the
+    //    frame's second system, and the guard searching the wrong
+    //    spot is the stealth story.
     stepWorld(state, [
       { x: 860 },
       { x: 860, action: 'hold', seconds: 2 },
@@ -399,10 +402,17 @@ export function buildShot(name) {
     ], 40 / STEP, (s) => s.guards[0].state === 'chase');
     const fx = Math.round(state.player.x);
     stepWorld(state, [{ x: fx, action: 'flash' }], 5 / STEP);
+    stepWorld(state, [{ x: fx, action: 'emp' }], 5 / STEP);
     stepWorld(state, [
-      { x: 545 },
-      { x: 545, action: 'wait', seconds: 10 },
-    ], 12 / STEP, (s) => s.guards[0].state === 'search' && s.shadow.inShadow);
+      { x: 1100 },
+      { x: 1100, action: 'openHack' },
+    ], 12 / STEP);
+    // Let the hall run: freeze when the guard is SEARCHING the LKP
+    // and the needle sits mid-green. The empty plan never breaks on
+    // its own — only the stop condition or the step budget ends it.
+    stepWorld(state, [], 6 / STEP, (s) => s.guards[0].state === 'search'
+      && s.minigame && s.minigame.active
+      && s.minigame.needle >= 50 && s.minigame.needle <= 55);
     return state;
   }
 

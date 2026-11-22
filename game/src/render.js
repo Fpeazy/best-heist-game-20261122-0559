@@ -4,7 +4,7 @@
 // big white silhouette with a dark outline, findable at a glance.
 import {
   CAMERA, COINS, COVER, EXTRA_LOOT, FIELD, GUARD, HIDE_SPOTS, LOCKER,
-  PALETTE, PLATFORMS, SERVICE_DOOR, SHADOW_ZONES, SWITCHES, TERMINAL,
+  PALETTE, PLATFORMS, SERVICE_DOOR, SWITCHES, TERMINAL,
   TOOLS, VITRINES, FONT, FONT_DISPLAY,
 } from './config.js';
 import { coneRayHit, laserHit } from './vision.js';
@@ -255,31 +255,6 @@ function drawAmbient(ctx, s) {
     ctx.beginPath();
     ctx.arc(x, y, m.r, 0, Math.PI * 2);
     ctx.fill();
-  }
-}
-
-/**
- * Rev12 — Shadow Stealth: the shadow zones as real places in the room.
- * A deep blue-teal dark patch with a soft rim and a small SHADOW tag,
- * so the player can see where to hide before stepping in. Drawn over
- * the room but under every entity, so nothing is ever hidden by it.
- */
-function drawShadowZones(ctx, s) {
-  for (const z of SHADOW_ZONES) {
-    ctx.fillStyle = 'rgba(8,16,32,0.42)';
-    roundRect(ctx, z.x, z.y, z.w, z.h, 8);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(46,196,182,0.28)';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    // A faint teal sheen along the top edge: the shadow has a shape,
-    // it is not a hole cut in the floor.
-    ctx.fillStyle = 'rgba(46,196,182,0.14)';
-    ctx.fillRect(z.x + 4, z.y + 3, z.w - 8, 2);
-    ctx.fillStyle = 'rgba(46,196,182,0.75)';
-    ctx.font = `bold 9px ${FONT}`;
-    ctx.textAlign = 'center';
-    ctx.fillText('SHADOW', z.x + z.w / 2, z.y + 13);
   }
 }
 
@@ -646,31 +621,6 @@ function drawThief(ctx, s) {
     ctx.beginPath();
     ctx.arc(x + w * 0.5, y + h * 0.5, 52, 0, Math.PI * 2);
     ctx.fill();
-  }
-  // Rev12 — IN SHADOW: a teal ring around the thief plus a small pill
-  // under his feet, live from s.shadow.inShadow. The pill sits BELOW
-  // the feet (not above the head) so it can never collide with a guard
-  // bark bubble, which lifts above the thief's head.
-  if (s.shadow && s.shadow.inShadow) {
-    ctx.strokeStyle = 'rgba(46,196,182,0.85)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.ellipse(x + w * 0.5, y + h * 0.5, w * 0.72, h * 0.58, 0, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.font = `bold 10px ${FONT}`;
-    const label = 'IN SHADOW';
-    const lw = ctx.measureText(label).width + 16;
-    const lx = Math.max(6, Math.min(FIELD.width - lw - 6, x + w / 2 - lw / 2));
-    const ly = y + h + 8;
-    ctx.fillStyle = 'rgba(13,17,32,0.92)';
-    roundRect(ctx, lx, ly, lw, 16, 8);
-    ctx.fill();
-    ctx.strokeStyle = PALETTE.teal;
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    ctx.fillStyle = PALETTE.teal;
-    ctx.textAlign = 'center';
-    ctx.fillText(label, lx + lw / 2, ly + 11.5);
   }
   // Rev4: a white halo ring + soft white glow, so the thief reads at
   // 768x480 on the navy wall and the dark carpet. The white silhouette
@@ -3880,7 +3830,6 @@ function drawLose(ctx, s) {
 export function render(ctx, s) {
   ctx.clearRect(0, 0, FIELD.width, FIELD.height);
   drawRoom(ctx, s);
-  drawShadowZones(ctx, s);
   drawGuardLightPools(ctx, s);
   drawAmbient(ctx, s);
   drawCoins(ctx, s);

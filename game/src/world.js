@@ -22,7 +22,7 @@
 import {
   ALARM, ALARM_TIERS, CAMERA, COINS, COVER, CUTOFF_X, EXTRA_LOOT, FIELD,
   GUARD, HIDE_SPOTS, INVENTORY_START, LOCKER, LOOT, MINIGAME, PLATFORMS,
-  PLAYER, SCORE, SERVICE_DOOR, SHADOW_ZONES, SWITCHES, TERMINAL, TOOLS,
+  PLAYER, SCORE, SERVICE_DOOR, SWITCHES, TERMINAL, TOOLS,
   VITRINES,
 } from './config.js';
 import { mulberry32 } from './random.js';
@@ -110,7 +110,6 @@ export function newWorld(seed = 1) {
     lockerUsed: false,
     heistRank: 'Novice',
     // --- Rev12 state. ---
-    shadow: { inShadow: false },
     heatPeak: 0,
     inventory: { ...INVENTORY_START },
     gadgetsUsed: { emp: 0, decoy: 0, flash: 0, lockpick: 0 },
@@ -158,15 +157,6 @@ function effectiveConeRange(s, g) {
   if (s.alarmTier === 2) range *= 1.15; // tier 2: +15% range
   if (!s.lights[guardFloor(g)]) range *= 0.7; // dark floor: -30%
   if (s.env.dimT > 0) range *= 0.75; // dimming event: -25%
-  // Rev12 shadow: a still or crouched thief in shadow is hard to see
-  // (-15% cone); a SPRINTING thief gets NO concealment at all — he is
-  // loud and moving, and the shadow does not hide him. (A flat -15%
-  // for runners starved the alert scene's chase: suspicion filled so
-  // slowly the guard was already adjacent when it maxed, and the
-  // staged catch flipped chase -> search before the freeze.)
-  if (s.shadow && s.shadow.inShadow && (s.player.crouch || Math.abs(s.player.vx) < 50)) {
-    range *= 0.85;
-  }
   return range;
 }
 
@@ -181,11 +171,6 @@ function suspicionMultiplier(s, g, dist) {
   if (!s.lights[guardFloor(g)]) m *= 0.7; // dark floor: -30%
   if (s.env.dimT > 0) m *= 0.5; // dimming event: -50%
   if (s.env.flicker < 0.35) m *= 0.5; // chandelier flicker dip: -50%
-  // Rev12 shadow: -55% suspicion for a still/crouched thief, NO
-  // concealment for a sprinting one (see effectiveConeRange above).
-  if (s.shadow && s.shadow.inShadow && (s.player.crouch || Math.abs(s.player.vx) < 50)) {
-    m *= 0.45;
-  }
   return m;
 }
 
@@ -235,18 +220,6 @@ function updateMission(s) {
   if (s.detections === 0) {
     s.ghostStreak = side + (s.loot.kancil ? 1 : 0);
   }
-}
-
-/** Rev12 — is the thief standing in a shadow zone right now? Fixed
- *  seeded rectangles from config; the renderer draws them, the
- *  suspicion/cone math reads this flag. */
-function updateShadow(s) {
-  const p = s.player;
-  const cx = p.x + p.width / 2;
-  const cy = p.y + p.height / 2;
-  s.shadow.inShadow = SHADOW_ZONES.some(
-    (z) => cx >= z.x && cx <= z.x + z.w && cy >= z.y && cy <= z.y + z.h,
-  );
 }
 
 /** Rev12 — heat level from the run's peak alarm. Heat never cools:
@@ -964,7 +937,6 @@ export function update(s, input, dt) {
   // Dynamic environment (dimming schedule + flicker), then the live
   // alarm tier and the escape state it drives.
   updateEnv(s);
-  updateShadow(s);
   // Rev12 — heat is the run's peak alarm: it only ever rises, even
   // when the alarm itself drops (hack relief, chase ending).
   s.heatPeak = Math.max(s.heatPeak, s.alarm);
